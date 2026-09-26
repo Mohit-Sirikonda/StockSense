@@ -11,7 +11,8 @@ import {
   OperationStatus,
 } from '../types';
 import { StorageService } from '../services/storage';
-import { useAuth } from './AuthContext';
+import { useAuth, NewUserInput, UpdateUserInput } from './AuthContext';
+import { DemoUser } from '../types/auth';
 
 interface InventoryContextType {
   // Data
@@ -31,6 +32,7 @@ interface InventoryContextType {
   login: (email: string, password: string) => { success: boolean; error?: string };
   logout: () => void;
   updateUserProfile: (profile: Partial<AuthSession>) => void;
+  hasPermission: (permission: string) => boolean;
 
   // Role booleans
   isManager: boolean;
@@ -38,6 +40,12 @@ interface InventoryContextType {
   isAdmin: boolean;
   assignedWarehouse: string;
   assignedWarehouseId: string;
+
+  // User management
+  users: DemoUser[];
+  addUser: (input: NewUserInput) => { success: boolean; error?: string };
+  updateUser: (id: string, updates: UpdateUserInput) => { success: boolean; error?: string };
+  deleteUser: (id: string) => { success: boolean; error?: string };
 
   // Products
   addProduct: (productData: Omit<Product, 'id' | 'createdAt' | 'updatedAt' | 'stock'> & { initialStock?: number }) => { success: boolean; error?: string };
@@ -83,11 +91,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     login,
     logout,
     updateSessionProfile,
+    hasPermission,
     isManager,
     isStaff,
     isAdmin,
     assignedWarehouse,
     assignedWarehouseId,
+    users,
+    addUser,
+    updateUser,
+    deleteUser,
   } = useAuth();
 
   // Initialize storage once
@@ -737,11 +750,16 @@ export const InventoryProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         login,
         logout,
         updateUserProfile: updateSessionProfile,
+        hasPermission,
         isManager,
         isStaff,
         isAdmin,
         assignedWarehouse,
         assignedWarehouseId,
+        users,
+        addUser,
+        updateUser,
+        deleteUser,
         addProduct,
         updateProduct,
         deleteProduct,
