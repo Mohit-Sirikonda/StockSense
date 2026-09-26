@@ -8,6 +8,7 @@ import {
   LedgerEntry,
   AuthSession,
 } from '../types';
+import { DemoUser } from '../types/auth';
 import {
   INITIAL_LOCATIONS,
   INITIAL_PRODUCTS,
@@ -17,6 +18,7 @@ import {
   INITIAL_ADJUSTMENTS,
   INITIAL_LEDGER,
 } from '../data/seedData';
+import { DEMO_USERS } from '../data/users';
 
 const KEYS = {
   LOCATIONS: 'stocksense_locations',
@@ -29,6 +31,7 @@ const KEYS = {
   SESSION: 'stocksense_session',
   THEME: 'stocksense_theme',
   SELECTED_WAREHOUSE: 'stocksense_selected_warehouse',
+  USERS: 'stocksense_users',
 };
 
 function safeGet<T>(key: string, fallback: T): T {
@@ -73,6 +76,9 @@ export const StorageService = {
     }
     if (!localStorage.getItem(KEYS.LEDGER)) {
       safeSet(KEYS.LEDGER, INITIAL_LEDGER);
+    }
+    if (!localStorage.getItem(KEYS.USERS)) {
+      safeSet(KEYS.USERS, DEMO_USERS);
     }
     // Clean up any legacy single-flag auth keys if present
     localStorage.removeItem('stocksense_is_authenticated');
@@ -160,6 +166,14 @@ export const StorageService = {
   },
   setLedger(ledger: LedgerEntry[]): void {
     safeSet(KEYS.LEDGER, ledger);
+  },
+
+  // Users
+  getUsers(): DemoUser[] {
+    return safeGet<DemoUser[]>(KEYS.USERS, DEMO_USERS);
+  },
+  setUsers(users: DemoUser[]): void {
+    safeSet(KEYS.USERS, users);
   },
 
   // Theme
