@@ -1,27 +1,25 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import {
-  Plus,
-  Search,
-  CheckCircle2,
-  Trash2,
-  AlertCircle,
-  Lock,
-} from 'lucide-react';
+import { Plus, Search, CheckCircle2, Trash2, AlertCircle, Lock } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { Receipt, OperationStatus, OperationItem } from '../types';
+import { quantitySummary } from '../domain/selectors';
+import { createId } from '../utils/id';
 
 export const Receipts: React.FC = () => {
   const {
     receipts,
     products,
+    can,
     locations,
     selectedWarehouseId,
+    setSelectedWarehouseId,
     addReceipt,
     validateReceipt,
+    setReceiptStatus,
     getLocationName,
     isStaff,
     assignedWarehouse,
@@ -29,12 +27,11 @@ export const Receipts: React.FC = () => {
   } = useInventory();
   const { showToast } = useToast();
 
+  const submissionId = React.useRef(createId());
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [warehouseFilter, setWarehouseFilter] = useState<string>(
-    isStaff ? assignedWarehouseId : selectedWarehouseId || 'all'
-  );
-
+  const warehouseFilter = selectedWarehouseId;
+  const setWarehouseFilter = setSelectedWarehouseId;
   // Slide-over drawer states
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedReceipt, setSelectedReceipt] = useState<Receipt | null>(null);
@@ -42,15 +39,13 @@ export const Receipts: React.FC = () => {
   // Form states
   const [formSupplier, setFormSupplier] = useState('');
   const [formWarehouse, setFormWarehouse] = useState(
-    isStaff ? assignedWarehouseId : locations[0]?.id || 'loc-main'
+    isStaff ? assignedWarehouseId : locations[0]?.id || 'loc-main',
   );
   const [formDate, setFormDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [formNotes, setFormNotes] = useState('');
   const [formStatus, setFormStatus] = useState<OperationStatus>('Ready');
 
-  const [formItems, setFormItems] = useState<
-    Array<{ productId: string; quantity: number }>
-  >([
+  const [formItems, setFormItems] = useState<Array<{ productId: string; quantity: number }>>([
     {
       productId: products[0]?.id || '',
       quantity: 50,
@@ -61,22 +56,15 @@ export const Receipts: React.FC = () => {
   // Validate dialog
   const [receiptToValidate, setReceiptToValidate] = useState<Receipt | null>(null);
 
-  useEffect(() => {
-    if (isStaff) {
-      setWarehouseFilter(assignedWarehouseId);
-    } else if (selectedWarehouseId !== 'all') {
-      setWarehouseFilter(selectedWarehouseId);
-    }
-  }, [isStaff, assignedWarehouseId, selectedWarehouseId]);
-
   const handleOpenCreate = () => {
+    submissionId.current = createId();
     setFormSupplier('');
     setFormWarehouse(
       isStaff
         ? assignedWarehouseId
         : selectedWarehouseId !== 'all'
-        ? selectedWarehouseId
-        : locations[0]?.id || 'loc-main'
+          ? selectedWarehouseId
+          : locations[0]?.id || 'loc-main',
     );
     setFormDate(new Date().toISOString().split('T')[0]);
     setFormNotes('');
@@ -106,19 +94,15 @@ export const Receipts: React.FC = () => {
     setFormItems((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleItemChange = (
-    index: number,
-    field: 'productId' | 'quantity',
-    value: string | number
-  ) => {
+  const handleItemChange = (index: number, field: 'productId' | 'quantity', value: string | number) => {
     setFormItems((prev) =>
       prev.map((item, i) => {
         if (i !== index) return item;
         return {
           ...item,
-          [field]: field === 'quantity' ? Math.max(1, Number(value) || 0) : value,
+          [field]: field === 'quantity' ? Number(value) : value,
         };
-      })
+      }),
     );
   };
 
@@ -154,16 +138,23 @@ export const Receipts: React.FC = () => {
       };
     });
 
-    const newReceipt = addReceipt({
-      supplier: formSupplier.trim(),
-      date: formDate,
-      warehouseId: formWarehouse,
-      notes: formNotes.trim(),
-      items: processedItems,
-      status: formStatus,
-    });
+    const newReceipt = addReceipt(
+      {
+        supplier: formSupplier.trim(),
+        date: formDate,
+        warehouseId: formWarehouse,
+        notes: formNotes.trim(),
+        items: processedItems,
+        status: formStatus,
+      },
+      submissionId.current,
+    );
+    if (!newReceipt.success) {
+      setFormError(newReceipt.error);
+      return;
+    }
 
-    showToast(`Receipt ${newReceipt.id} created.`, 'success');
+    showToast(`Receipt ${newReceipt.data.id} created.`, 'success');
     setIsCreateOpen(false);
   };
 
@@ -182,9 +173,9 @@ export const Receipts: React.FC = () => {
     } else {
       showToast(
         `Receipt ${receiptToValidate.id} validated. Stock allocated to ${getLocationName(
-          receiptToValidate.warehouseId
+          receiptToValidate.warehouseId,
         )}.`,
-        'success'
+        'success',
       );
       if (selectedReceipt?.id === receiptToValidate.id) {
         setSelectedReceipt({ ...selectedReceipt, status: 'Done' });
@@ -202,11 +193,15 @@ export const Receipts: React.FC = () => {
       const matchesSearch =
         searchTerm === '' ||
         r.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        r.supplier.toLowerCase().includes(searchTerm.toLowerCase());
+        r.supplier.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.items.some((item) =>
+          [item.sku, item.productName].some((value) =>
+            value.toLowerCase().includes(searchTerm.toLowerCase()),
+          ),
+        );
 
       const matchesStatus = statusFilter === 'all' || r.status === statusFilter;
-      const matchesWarehouse =
-        isStaff || warehouseFilter === 'all' || r.warehouseId === warehouseFilter;
+      const matchesWarehouse = isStaff || warehouseFilter === 'all' || r.warehouseId === warehouseFilter;
 
       return matchesSearch && matchesStatus && matchesWarehouse;
     });
@@ -240,7 +235,7 @@ export const Receipts: React.FC = () => {
           <Search className="w-3.5 h-3.5 text-[var(--text-secondary)] absolute left-3 top-2.5 pointer-events-none" />
           <input
             type="text"
-            placeholder="Search by reference or supplier..."
+            placeholder="Search reference, supplier, product or SKU..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] placeholder-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent)]"
@@ -249,6 +244,7 @@ export const Receipts: React.FC = () => {
 
         <div>
           <select
+            aria-label="Receipt status filter"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="w-full px-2.5 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -258,6 +254,7 @@ export const Receipts: React.FC = () => {
             <option value="Waiting">Waiting</option>
             <option value="Draft">Draft</option>
             <option value="Done">Validated (Done)</option>
+            <option value="Canceled">Canceled</option>
           </select>
         </div>
 
@@ -307,8 +304,9 @@ export const Receipts: React.FC = () => {
               </tr>
             ) : (
               filteredReceipts.map((rcpt) => {
-                const totalUnits = rcpt.items.reduce((sum, it) => sum + it.quantity, 0);
+                const totalUnits = quantitySummary(rcpt.items);
                 const isDone = rcpt.status === 'Done';
+                const isCanceled = rcpt.status === 'Canceled';
                 const destName = getLocationName(rcpt.warehouseId);
 
                 return (
@@ -317,14 +315,12 @@ export const Receipts: React.FC = () => {
                     onClick={() => setSelectedReceipt(rcpt)}
                     className="hover:bg-[var(--surface-secondary)] cursor-pointer transition-colors"
                   >
-                    <td className="py-2.5 px-3 font-mono text-[var(--text)] font-medium">
-                      {rcpt.id}
-                    </td>
+                    <td className="py-2.5 px-3 font-mono text-[var(--text)] font-medium">{rcpt.id}</td>
                     <td className="py-2.5 px-3 text-[var(--text)]">{rcpt.supplier}</td>
                     <td className="py-2.5 px-3 text-[var(--text-secondary)]">{rcpt.date}</td>
                     <td className="py-2.5 px-3 text-[var(--text-secondary)]">{destName}</td>
                     <td className="py-2.5 px-3 text-right text-[var(--text)] font-medium">
-                      {totalUnits.toLocaleString()}{' '}
+                      {totalUnits}{' '}
                       <span className="text-[10px] text-[var(--text-secondary)] font-normal">
                         ({rcpt.items.length} lines)
                       </span>
@@ -338,6 +334,8 @@ export const Receipts: React.FC = () => {
                           <CheckCircle2 className="w-3 h-3" />
                           Validated
                         </span>
+                      ) : isCanceled ? (
+                        <span className="text-[var(--text-secondary)]">Canceled</span>
                       ) : (
                         <button
                           onClick={() => setReceiptToValidate(rcpt)}
@@ -393,9 +391,9 @@ export const Receipts: React.FC = () => {
               </div>
 
               <div>
-                <div className="text-[var(--text-secondary)]">Total units</div>
+                <div className="text-[var(--text-secondary)]">Quantities by unit</div>
                 <div className="mt-1 font-medium text-[var(--text)]">
-                  {selectedReceipt.items.reduce((s, i) => s + i.quantity, 0)} units
+                  {quantitySummary(selectedReceipt.items)}
                 </div>
               </div>
             </div>
@@ -407,9 +405,7 @@ export const Receipts: React.FC = () => {
                   <div key={idx} className="p-2.5 flex items-center justify-between">
                     <div>
                       <div className="font-medium text-[var(--text)]">{it.productName}</div>
-                      <div className="text-[10px] text-[var(--text-secondary)] font-mono">
-                        {it.sku}
-                      </div>
+                      <div className="text-[10px] text-[var(--text-secondary)] font-mono">{it.sku}</div>
                     </div>
                     <div className="font-mono font-medium text-[var(--text)]">
                       {it.quantity} {it.unit}
@@ -419,6 +415,26 @@ export const Receipts: React.FC = () => {
               </div>
             </div>
 
+            {!['Done', 'Canceled'].includes(selectedReceipt.status) && (
+              <label className="field-label">
+                Receipt status
+                <select
+                  value={selectedReceipt.status}
+                  onChange={(e) => {
+                    const result = setReceiptStatus(
+                      selectedReceipt.id,
+                      e.target.value as 'Draft' | 'Waiting' | 'Ready' | 'Canceled',
+                    );
+                    if (!result.success) showToast(result.error, 'error');
+                    else setSelectedReceipt(result.data);
+                  }}
+                >
+                  {['Draft', 'Waiting', 'Ready', 'Canceled'].map((status) => (
+                    <option key={status}>{status}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             {selectedReceipt.notes && (
               <div className="space-y-1 pt-2">
                 <div className="text-[var(--text-secondary)]">Notes</div>
@@ -428,7 +444,7 @@ export const Receipts: React.FC = () => {
               </div>
             )}
 
-            {selectedReceipt.status !== 'Done' && (
+            {!['Done', 'Canceled'].includes(selectedReceipt.status) && (
               <div className="pt-4 border-t border-[var(--border)]">
                 <button
                   onClick={() => {
@@ -463,8 +479,11 @@ export const Receipts: React.FC = () => {
           )}
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Supplier / Vendor *</label>
+            <label htmlFor="receipts-field-0" className="text-[var(--text-secondary)] font-medium">
+              Supplier / Vendor *
+            </label>
             <input
+              id="receipts-field-0"
               type="text"
               required
               value={formSupplier}
@@ -474,10 +493,21 @@ export const Receipts: React.FC = () => {
             />
           </div>
 
+          <label className="field-label">
+            Initial status
+            <select value={formStatus} onChange={(e) => setFormStatus(e.target.value as OperationStatus)}>
+              {['Draft', 'Waiting', 'Ready'].map((status) => (
+                <option key={status}>{status}</option>
+              ))}
+            </select>
+          </label>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Arrival date *</label>
+              <label htmlFor="receipts-field-1" className="text-[var(--text-secondary)] font-medium">
+                Arrival date *
+              </label>
               <input
+                id="receipts-field-1"
                 type="date"
                 required
                 value={formDate}
@@ -487,8 +517,11 @@ export const Receipts: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Destination warehouse *</label>
+              <label htmlFor="receipts-field-2" className="text-[var(--text-secondary)] font-medium">
+                Destination warehouse *
+              </label>
               <select
+                id="receipts-field-2"
                 value={formWarehouse}
                 onChange={(e) => setFormWarehouse(e.target.value)}
                 disabled={isStaff}
@@ -524,6 +557,7 @@ export const Receipts: React.FC = () => {
               {formItems.map((item, idx) => (
                 <div key={idx} className="flex items-center gap-2">
                   <select
+                    aria-label={`Product on line ${idx + 1}`}
                     value={item.productId}
                     onChange={(e) => handleItemChange(idx, 'productId', e.target.value)}
                     className="flex-1 px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -537,7 +571,9 @@ export const Receipts: React.FC = () => {
 
                   <input
                     type="number"
-                    min="1"
+                    min="0"
+                    step="any"
+                    aria-label={`Quantity on line ${idx + 1}`}
                     value={item.quantity}
                     onChange={(e) => handleItemChange(idx, 'quantity', e.target.value)}
                     className="w-20 px-2 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] text-right font-medium focus:outline-none focus:border-[var(--accent)]"
@@ -557,8 +593,11 @@ export const Receipts: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Notes</label>
+            <label htmlFor="receipts-field-3" className="text-[var(--text-secondary)] font-medium">
+              Notes
+            </label>
             <textarea
+              id="receipts-field-3"
               rows={2}
               value={formNotes}
               onChange={(e) => setFormNotes(e.target.value)}
@@ -592,7 +631,7 @@ export const Receipts: React.FC = () => {
         onConfirm={handleConfirmValidate}
         title="Validate receipt"
         message={`Validate receipt ${receiptToValidate?.id} from ${receiptToValidate?.supplier}? This will immediately update inventory counts in ${getLocationName(
-          receiptToValidate?.warehouseId || ''
+          receiptToValidate?.warehouseId || '',
         )}.`}
         confirmLabel="Validate & receive"
         variant="info"

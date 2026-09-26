@@ -1,405 +1,345 @@
-import React, { useMemo } from 'react';
-import { ArrowRight, Lock } from 'lucide-react';
+import React, { useState } from 'react';
+import { selectDashboard } from '../domain/dashboard';
+import type { OperationStatus, OperationType } from '../types';
+import {
+  ArrowRight,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  ArrowLeftRight,
+  Package,
+  AlertTriangle,
+} from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
-import { NavPage } from '../components/layout/TopNavigation';
+import type { NavPage } from '../components/layout/TopNavigation';
 import { StatusBadge } from '../components/ui/StatusBadge';
-
-interface DashboardProps {
-  onNavigate: (page: NavPage) => void;
-}
-
-export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
+import { inWarehouse, stockAt, ledgerMovement, quantitySummary } from '../domain/selectors';
+export const Dashboard: React.FC<{ onNavigate: (page: NavPage) => void }> = ({ onNavigate }) => {
   const {
     products,
     locations,
     receipts,
     deliveries,
     transfers,
-    ledger,
-    selectedWarehouseId,
-    currentUser,
+    adjustments,
+    setSelectedWarehouseId,
     isStaff,
-    assignedWarehouse,
-    assignedWarehouseId,
+    ledger,
+    selectedWarehouseId: scope,
+    getLocationName,
+    can,
   } = useInventory();
-
-  // Metrics based on role & warehouse context
-  const totalStockUnits = useMemo(() => {
-    if (isStaff) {
-      return products.reduce((acc, p) => acc + (p.locationStock[assignedWarehouseId] || 0), 0);
-    }
-    if (selectedWarehouseId === 'all') {
-      return products.reduce((acc, p) => acc + p.stock, 0);
-    }
-    return products.reduce((acc, p) => acc + (p.locationStock[selectedWarehouseId] || 0), 0);
-  }, [products, isStaff, assignedWarehouseId, selectedWarehouseId]);
-
-  const lowStockItems = useMemo(() => {
-    if (isStaff) {
-      return products.filter((p) => {
-        const qtyAtLoc = p.locationStock[assignedWarehouseId] || 0;
-        return qtyAtLoc > 0 && qtyAtLoc <= p.reorderLevel;
-      });
-    }
-    return products.filter((p) => p.stock > 0 && p.stock <= p.reorderLevel);
-  }, [products, isStaff, assignedWarehouseId]);
-
-  const outOfStockItems = useMemo(() => {
-    if (isStaff) {
-      return products.filter((p) => {
-        const qtyAtLoc = p.locationStock[assignedWarehouseId] || 0;
-        return qtyAtLoc === 0 && p.primaryLocationId === assignedWarehouseId;
-      });
-    }
-    return products.filter((p) => p.stock === 0);
-  }, [products, isStaff, assignedWarehouseId]);
-
-  const pendingReceiptsCount = useMemo(() => {
-    if (isStaff) {
-      return receipts.filter(
-        (r) =>
-          r.warehouseId === assignedWarehouseId &&
-          r.status !== 'Done' &&
-          r.status !== 'Canceled'
-      ).length;
-    }
-    return receipts.filter((r) => r.status !== 'Done' && r.status !== 'Canceled').length;
-  }, [receipts, isStaff, assignedWarehouseId]);
-
-  const readyDeliveriesCount = useMemo(() => {
-    if (isStaff) {
-      return deliveries.filter(
-        (d) =>
-          d.warehouseId === assignedWarehouseId &&
-          d.status !== 'Done' &&
-          d.status !== 'Canceled'
-      ).length;
-    }
-    return deliveries.filter((d) => d.status !== 'Done' && d.status !== 'Canceled').length;
-  }, [deliveries, isStaff, assignedWarehouseId]);
-
-  const activeTransfersCount = useMemo(() => {
-    if (isStaff) {
-      return transfers.filter(
-        (t) =>
-          (t.fromLocationId === assignedWarehouseId || t.toLocationId === assignedWarehouseId) &&
-          t.status !== 'Done' &&
-          t.status !== 'Canceled'
-      ).length;
-    }
-    return transfers.filter((t) => t.status !== 'Done' && t.status !== 'Canceled').length;
-  }, [transfers, isStaff, assignedWarehouseId]);
-
-  // Stock requiring attention
-  const attentionItems = useMemo(() => {
-    const list = isStaff
-      ? products.filter((p) => {
-          const qty = p.locationStock[assignedWarehouseId] || 0;
-          return qty <= p.reorderLevel && (qty > 0 || p.primaryLocationId === assignedWarehouseId);
-        })
-      : products.filter((p) => p.stock <= p.reorderLevel);
-
-    return list
-      .sort((a, b) => {
-        const stockA = isStaff ? a.locationStock[assignedWarehouseId] || 0 : a.stock;
-        const stockB = isStaff ? b.locationStock[assignedWarehouseId] || 0 : b.stock;
-        if (stockA === 0 && stockB > 0) return -1;
-        if (stockB === 0 && stockA > 0) return 1;
-        return stockA - stockB;
-      })
-      .slice(0, 6);
-  }, [products, isStaff, assignedWarehouseId]);
-
-  // Recent activity: filter to assigned warehouse for staff
-  const recentActivity = useMemo(() => {
-    if (isStaff) {
-      return ledger
-        .filter((entry) => {
-          return Boolean(
-            entry.fromLocationId === assignedWarehouseId ||
-            entry.toLocationId === assignedWarehouseId ||
-            (entry.fromLocationName &&
-              entry.fromLocationName.toLowerCase().includes(assignedWarehouse.toLowerCase())) ||
-            (entry.toLocationName &&
-              entry.toLocationName.toLowerCase().includes(assignedWarehouse.toLowerCase()))
-          );
-        })
-        .slice(0, 8);
-    }
-    return ledger.slice(0, 8);
-  }, [ledger, isStaff, assignedWarehouseId, assignedWarehouse]);
-
+  const [document, setDocument] = useState<OperationType | 'all'>('all');
+  const [status, setStatus] = useState<OperationStatus | 'all'>('all');
+  const [category, setCategory] = useState('all');
+  const summary = selectDashboard(
+    { products, receipts, deliveries, transfers, adjustments, ledger },
+    { warehouse: scope, category, document, status },
+  );
+  const { products: scoped, attention } = summary;
+  const activity = summary.activity.slice(0, 6);
+  const icons = {
+    Receipt: ArrowDownToLine,
+    Delivery: ArrowUpFromLine,
+    Transfer: ArrowLeftRight,
+    Adjustment: Package,
+  };
+  const queue = summary.documents.map((row) => ({ ...row, icon: icons[row.type] }));
+  const categories = Array.from(new Set(products.map((product) => product.category))).sort();
   return (
-    <div className="space-y-8">
-      {/* 1. Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+    <div className="space-y-7">
+      <div className="page-heading">
         <div>
-          <h1 className="text-xl font-semibold text-[var(--text)]">
-            {isStaff ? `Inventory — ${assignedWarehouse}` : 'Inventory'}
+          <div className="eyebrow mb-2">
+            CONTROL ROOM{' '}
+            <span className="section-index ml-2">
+              / {scope === 'all' ? 'ALL FACILITIES' : getLocationName(scope).toUpperCase()}
+            </span>
+          </div>
+          <h1>
+            Inventory overview<span className="heading-period">.</span>
           </h1>
-          <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-            {isStaff
-              ? `Operational visibility for ${assignedWarehouse} · Logged in as ${currentUser?.name} (${currentUser?.role})`
-              : 'Real-time visibility across stock, movement and warehouse operations.'}
-          </p>
+          <p>Stock that needs attention. Work ready to move.</p>
         </div>
-
-        {isStaff && (
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[var(--surface-secondary)] border border-[var(--border)] text-xs text-[var(--text-secondary)] self-start sm:self-auto">
-            <Lock className="w-3.5 h-3.5 text-[var(--accent)]" />
-            <span className="font-medium text-[var(--text)]">Assigned:</span>
-            <span>{assignedWarehouse}</span>
-          </div>
-        )}
+        <button className="primary-button" onClick={() => onNavigate('receipts')}>
+          <ArrowDownToLine size={15} />
+          Receive stock
+        </button>
       </div>
-
-      {/* 2. Operational Summary - Horizontal band */}
-      <div className="py-4 border-y border-[var(--border)] grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-6">
-        <div>
-          <div className="text-xs text-[var(--text-secondary)]">
-            {isStaff ? 'Available stock' : 'Total stock'}
-          </div>
-          <div className="text-xl font-semibold text-[var(--text)] mt-1">
-            {totalStockUnits.toLocaleString()}{' '}
-            <span className="text-xs font-normal text-[var(--text-secondary)]">units</span>
-          </div>
-        </div>
-
-        <div className="sm:border-l border-[var(--border-subtle)] sm:pl-6">
-          <div className="text-xs text-[var(--text-secondary)]">Low stock</div>
-          <div className="text-xl font-semibold text-[var(--warning)] mt-1">
-            {lowStockItems.length}{' '}
-            <span className="text-xs font-normal text-[var(--text-secondary)]">items</span>
-          </div>
-        </div>
-
-        <div className="lg:border-l border-[var(--border-subtle)] lg:pl-6">
-          <div className="text-xs text-[var(--text-secondary)]">
-            {isStaff ? 'Zero stock' : 'Out of stock'}
-          </div>
-          <div className="text-xl font-semibold text-[var(--danger)] mt-1">
-            {outOfStockItems.length}{' '}
-            <span className="text-xs font-normal text-[var(--text-secondary)]">items</span>
-          </div>
-        </div>
-
-        <div className="border-t sm:border-t-0 sm:border-l border-[var(--border-subtle)] sm:pl-6 pt-4 sm:pt-0">
-          <div className="text-xs text-[var(--text-secondary)]">
-            {isStaff ? "Today's receipts" : 'Pending receipts'}
-          </div>
-          <div className="text-xl font-semibold text-[var(--text)] mt-1">
-            {pendingReceiptsCount}{' '}
-            <span className="text-xs font-normal text-[var(--text-secondary)]">orders</span>
-          </div>
-        </div>
-
-        <div className="border-t sm:border-t-0 lg:border-l border-[var(--border-subtle)] lg:pl-6 pt-4 sm:pt-0">
-          <div className="text-xs text-[var(--text-secondary)]">
-            {isStaff ? "Today's deliveries" : 'Ready deliveries'}
-          </div>
-          <div className="text-xl font-semibold text-[var(--text)] mt-1">
-            {readyDeliveriesCount}{' '}
-            <span className="text-xs font-normal text-[var(--text-secondary)]">shipments</span>
-          </div>
-        </div>
-
-        <div className="border-t sm:border-t-0 border-[var(--border-subtle)] lg:border-l lg:pl-6 pt-4 sm:pt-0">
-          <div className="text-xs text-[var(--text-secondary)]">
-            {isStaff ? 'Pending transfers' : 'Active transfers'}
-          </div>
-          <div className="text-xl font-semibold text-[var(--text)] mt-1">
-            {activeTransfersCount}{' '}
-            <span className="text-xs font-normal text-[var(--text-secondary)]">
-              {isStaff ? 'transfers' : 'in transit'}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3" aria-label="Dashboard filters">
+        <label className="field-label">
+          Document type
+          <select value={document} onChange={(e) => setDocument(e.target.value as OperationType | 'all')}>
+            <option value="all">All documents</option>
+            <option value="Receipt">Receipts</option>
+            <option value="Delivery">Delivery</option>
+            <option value="Transfer">Internal</option>
+            <option value="Adjustment">Adjustments</option>
+          </select>
+        </label>
+        <label className="field-label">
+          Document status
+          <select value={status} onChange={(e) => setStatus(e.target.value as OperationStatus | 'all')}>
+            <option value="all">All statuses</option>
+            {['Draft', 'Waiting', 'Ready', 'Done', 'Canceled'].map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+        <label className="field-label">
+          Warehouse / location
+          <select disabled={isStaff} value={scope} onChange={(e) => setSelectedWarehouseId(e.target.value)}>
+            {!isStaff && <option value="all">All warehouses</option>}
+            {locations.map((location) => (
+              <option key={location.id} value={location.id}>
+                {location.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field-label">
+          Product category
+          <select value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="all">All categories</option>
+            {categories.map((value) => (
+              <option key={value}>{value}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <p className="text-xs text-[var(--text-secondary)]">
+        Stock summaries show current balances. Document and status filters narrow them to products in matching
+        documents. Pending counts exclude completed and canceled work.
+      </p>
+      <div className="metrics-band">
+        {[
+          {
+            label: 'Products in stock',
+            value: summary.inStock,
+            note: 'distinct SKUs',
+            icon: Package,
+            page: 'products',
+          },
+          {
+            label: 'Stock alerts',
+            value: attention.length,
+            note: attention.filter((p) => stockAt(p, scope) === 0).length + ' out of stock',
+            icon: AlertTriangle,
+            page: 'products',
+          },
+          {
+            label: 'Open receipts',
+            value: summary.pendingReceipts,
+            note: 'awaiting receipt',
+            icon: ArrowDownToLine,
+            page: 'receipts',
+          },
+          {
+            label: 'Open deliveries',
+            value: summary.pendingDeliveries,
+            note: 'awaiting dispatch',
+            icon: ArrowUpFromLine,
+            page: 'deliveries',
+          },
+          {
+            label: 'Transfers scheduled',
+            value: summary.scheduledTransfers,
+            note: 'awaiting execution',
+            icon: ArrowLeftRight,
+            page: 'transfers',
+          },
+        ].map((metric, i) => (
+          <button
+            key={metric.label}
+            className={'metric ' + (i === 1 && metric.value ? 'attention' : '')}
+            onClick={() => onNavigate(metric.page as NavPage)}
+          >
+            <span className="metric-label">
+              {metric.label}
+              <metric.icon size={15} />
             </span>
-          </div>
-        </div>
+            <span className="metric-value">{String(metric.value).padStart(2, '0')}</span>
+            <span className="metric-note">
+              {metric.note}
+              <ArrowRight size={13} />
+            </span>
+          </button>
+        ))}
       </div>
-
-      {/* 3. Main Grid: Attention Items & Recent Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Section: Stock requiring attention */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-[var(--text)]">Stock requiring attention</h2>
-            <button
-              onClick={() => onNavigate('products')}
-              className="text-xs text-[var(--accent)] hover:underline flex items-center gap-1"
-            >
-              <span>{isStaff ? 'View floor products' : 'View all products'}</span>
-              <ArrowRight className="w-3 h-3" />
+      <div className="dashboard-grid">
+        <section>
+          <div className="section-heading">
+            <h2>
+              <span className="section-number">01</span>Stock requiring attention
+            </h2>
+            <button className="text-link" onClick={() => onNavigate('products')}>
+              All products <ArrowRight size={13} />
             </button>
           </div>
-
-          <div className="border border-[var(--border)] rounded bg-[var(--surface)] overflow-hidden">
-            {attentionItems.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[var(--text-secondary)]">
-                All inventory items are currently above safe reorder thresholds.
-              </div>
-            ) : (
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]">
-                    <th className="py-2.5 px-3 font-medium">Product</th>
-                    <th className="py-2.5 px-3 font-medium text-right">
-                      {isStaff ? 'At facility' : 'Current'}
-                    </th>
-                    <th className="py-2.5 px-3 font-medium text-right">Reorder level</th>
-                    <th className="py-2.5 px-3 font-medium">Status</th>
-                    <th className="py-2.5 px-3 font-medium text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)]">
-                  {attentionItems.map((prod) => {
-                    const displayedStock = isStaff
-                      ? prod.locationStock[assignedWarehouseId] || 0
-                      : prod.stock;
-                    const isOut = displayedStock === 0;
-
-                    return (
-                      <tr key={prod.id} className="hover:bg-[var(--surface-secondary)] transition-colors">
-                        <td className="py-2.5 px-3">
-                          <div className="font-medium text-[var(--text)]">{prod.name}</div>
-                          <div className="text-[10px] text-[var(--text-secondary)] font-mono">{prod.sku}</div>
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-medium">
-                          {displayedStock} <span className="text-[10px] text-[var(--text-secondary)]">{prod.unit}</span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right text-[var(--text-secondary)]">
-                          {prod.reorderLevel} {prod.unit}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <StatusBadge status={isOut ? 'Out of stock' : 'Low stock'} size="sm" />
-                        </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <button
-                            onClick={() => onNavigate('receipts')}
-                            className="text-[11px] font-medium text-[var(--accent)] hover:underline"
-                          >
-                            Receive stock
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </section>
-
-        {/* Section: Recent activity */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-[var(--text)]">Recent activity</h2>
-            <button
-              onClick={() => onNavigate('ledger')}
-              className="text-xs text-[var(--accent)] hover:underline flex items-center gap-1"
-            >
-              <span>{isStaff ? 'View floor ledger' : 'View full ledger'}</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
-          </div>
-
-          <div className="border border-[var(--border)] rounded bg-[var(--surface)] overflow-hidden">
-            {recentActivity.length === 0 ? (
-              <div className="p-6 text-center text-xs text-[var(--text-secondary)]">
-                No recent activity recorded for {isStaff ? assignedWarehouse : 'inventory'}.
-              </div>
-            ) : (
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="border-b border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]">
-                    <th className="py-2.5 px-3 font-medium">Time</th>
-                    <th className="py-2.5 px-3 font-medium">Operation</th>
-                    <th className="py-2.5 px-3 font-medium">Product</th>
-                    <th className="py-2.5 px-3 font-medium text-right">Change</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)]">
-                  {recentActivity.map((entry) => {
-                    const timeOnly = entry.timestamp.includes('T')
-                      ? entry.timestamp.split('T')[1].slice(0, 5)
-                      : entry.timestamp.slice(11, 16);
-                    const isPositive = entry.quantityChange > 0;
-
-                    return (
-                      <tr key={entry.id} className="hover:bg-[var(--surface-secondary)] transition-colors">
-                        <td className="py-2.5 px-3 text-[var(--text-secondary)] font-mono text-[11px]">
-                          {timeOnly}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className="font-medium text-[var(--text)]">{entry.operationType}</span>
-                        </td>
-                        <td className="py-2.5 px-3">
-                          <span className="text-[var(--text)]">{entry.productName}</span>
-                        </td>
-                        <td
-                          className={`py-2.5 px-3 text-right font-medium font-mono ${
-                            isPositive ? 'text-[var(--success)]' : 'text-[var(--danger)]'
-                          }`}
-                        >
-                          {isPositive ? `+${entry.quantityChange}` : entry.quantityChange} {entry.unit}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </section>
-      </div>
-
-      {/* 4. Warehouse overview section - ONLY for Inventory Manager & Administrator */}
-      {!isStaff && (
-        <section className="space-y-3 pt-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-[var(--text)]">Warehouse overview</h2>
-            <span className="text-xs text-[var(--text-secondary)]">
-              {locations.length} active locations
-            </span>
-          </div>
-
-          <div className="border border-[var(--border)] rounded bg-[var(--surface)] overflow-hidden">
-            <table className="w-full text-left text-xs">
+          <div className="data-panel">
+            <table>
               <thead>
-                <tr className="border-b border-[var(--border)] bg-[var(--surface-secondary)] text-[var(--text-secondary)]">
-                  <th className="py-2.5 px-4 font-medium">Location</th>
-                  <th className="py-2.5 px-4 font-medium">Code</th>
-                  <th className="py-2.5 px-4 font-medium text-right">Stock on hand</th>
-                  <th className="py-2.5 px-4 font-medium text-right">Share of inventory</th>
+                <tr>
+                  <th>Product / SKU</th>
+                  <th className="text-right">Available</th>
+                  <th className="text-right">Reorder</th>
+                  <th>Status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--border-subtle)]">
-                {locations.map((loc) => {
-                  const stockAtLoc = products.reduce(
-                    (sum, p) => sum + (p.locationStock[loc.id] || 0),
-                    0
-                  );
-                  const globalTotal = products.reduce((sum, p) => sum + p.stock, 0);
-                  const sharePercent =
-                    globalTotal > 0 ? Math.round((stockAtLoc / globalTotal) * 100) : 0;
-
-                  return (
-                    <tr key={loc.id} className="hover:bg-[var(--surface-secondary)] transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-medium text-[var(--text)]">{loc.name}</div>
-                        <div className="text-[11px] text-[var(--text-secondary)]">
-                          {loc.description || 'Facility'}
-                        </div>
+              <tbody>
+                {attention.slice(0, 6).map((product) => (
+                  <tr key={product.id}>
+                    <td>
+                      <button className="table-product" onClick={() => onNavigate('products')}>
+                        <strong>{product.name}</strong>
+                        <small>{product.sku}</small>
+                      </button>
+                    </td>
+                    <td className="text-right tabular-nums font-medium">
+                      {stockAt(product, scope)}{' '}
+                      <span className="text-[var(--text-secondary)]">{product.unit}</span>
+                    </td>
+                    <td className="text-right font-mono">{product.reorderLevel}</td>
+                    <td>
+                      <StatusBadge status={stockAt(product, scope) === 0 ? 'Out of stock' : 'Low stock'} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!attention.length && (
+              <div className="empty-state">
+                <Package size={24} />
+                <strong>Stock is above reorder levels</strong>
+                <span>No stock alerts in the selected facility.</span>
+              </div>
+            )}
+            <div className="table-footnote">
+              <span>{attention.length} products need review</span>
+              <span>Measured in each product’s own unit</span>
+            </div>
+          </div>
+        </section>
+        <section>
+          <div className="section-heading">
+            <h2>
+              <span className="section-number">02</span>Operations register
+            </h2>
+            <span className="eyebrow">{queue.length} MATCHING</span>
+          </div>
+          <div className="data-panel queue-list">
+            {queue.length ? (
+              queue.map((item) => (
+                <button key={item.id} className="queue-row" onClick={() => onNavigate(item.page)}>
+                  <span className="queue-icon">
+                    <item.icon size={17} />
+                  </span>
+                  <span className="queue-detail">
+                    <strong>{item.id}</strong>
+                    <small>{item.partner}</small>
+                  </span>
+                  <StatusBadge status={item.status} />
+                  <ArrowRight size={13} />
+                </button>
+              ))
+            ) : (
+              <div className="empty-state">
+                <ClipboardEmpty />
+                <strong>No matching operations</strong>
+                <span>Change the document, status, category, or facility filters.</span>
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+      <section>
+        <div className="section-heading">
+          <h2>
+            <span className="section-number">03</span>Latest movements
+          </h2>
+          <button className="text-link" onClick={() => onNavigate('ledger')}>
+            Open stock ledger <ArrowRight size={13} />
+          </button>
+        </div>
+        <div className="data-panel">
+          <table>
+            <thead>
+              <tr>
+                <th>Recorded</th>
+                <th>Reference</th>
+                <th>Operation</th>
+                <th>Product</th>
+                <th className="text-right">Movement</th>
+                <th>Recorded by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {activity.map((entry) => {
+                const movement = ledgerMovement(entry, scope);
+                return (
+                  <tr key={entry.id}>
+                    <td className="font-mono text-[var(--text-secondary)] whitespace-nowrap">
+                      {new Date(entry.timestamp).toLocaleString(undefined, {
+                        month: 'short',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </td>
+                    <td className="font-mono">{entry.referenceId}</td>
+                    <td>{entry.operationType}</td>
+                    <td>
+                      <strong className="font-medium">{entry.productName}</strong>
+                    </td>
+                    <td className={'text-right font-mono movement-' + movement.tone}>{movement.text}</td>
+                    <td className="text-[var(--text-secondary)]">{entry.user}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!activity.length && <div className="empty-state">No stock movements in this facility yet.</div>}
+        </div>
+      </section>
+      {can('manageLocations') && (
+        <section>
+          <div className="section-heading">
+            <h2>
+              <span className="section-number">04</span>Facility register
+            </h2>
+            <span className="eyebrow">BALANCES BY UNIT</span>
+          </div>
+          <div className="data-panel">
+            <table>
+              <thead>
+                <tr>
+                  <th>Facility</th>
+                  <th>Code</th>
+                  <th className="text-right">Products stocked</th>
+                  <th>Stock on hand</th>
+                </tr>
+              </thead>
+              <tbody>
+                {locations
+                  .filter((location) => inWarehouse(location.id, scope))
+                  .map((location) => (
+                    <tr key={location.id}>
+                      <td>
+                        <strong className="font-medium">{location.name}</strong>
+                        <small className="table-subtext">{location.description}</small>
                       </td>
-                      <td className="py-3 px-4 font-mono text-[var(--text-secondary)]">{loc.code}</td>
-                      <td className="py-3 px-4 text-right font-medium text-[var(--text)]">
-                        {stockAtLoc.toLocaleString()}{' '}
-                        <span className="text-[10px] text-[var(--text-secondary)] font-normal">units</span>
+                      <td className="font-mono text-[var(--text-secondary)]">{location.code}</td>
+                      <td className="text-right font-mono">
+                        {scoped.filter((p) => (p.locationStock[location.id] ?? 0) > 0).length}
                       </td>
-                      <td className="py-3 px-4 text-right text-[var(--text-secondary)]">
-                        {sharePercent}%
+                      <td className="font-mono">
+                        {quantitySummary(
+                          scoped
+                            .filter((p) => (p.locationStock[location.id] ?? 0) > 0)
+                            .map((p) => ({ quantity: p.locationStock[location.id], unit: p.unit })),
+                        )}
                       </td>
                     </tr>
-                  );
-                })}
+                  ))}
               </tbody>
             </table>
           </div>
@@ -408,3 +348,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
     </div>
   );
 };
+function ClipboardEmpty() {
+  return <Package size={24} />;
+}

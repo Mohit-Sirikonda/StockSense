@@ -1,30 +1,16 @@
 import React, { useState } from 'react';
-import {
-  Plus,
-  Edit2,
-  Trash2,
-  RotateCcw,
-  AlertCircle,
-  Sun,
-  Moon,
-} from 'lucide-react';
+import { Plus, Edit2, Trash2, RotateCcw, AlertCircle, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
 import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { Location } from '../types';
+import { quantitySummary } from '../domain/selectors';
 
 export const Settings: React.FC = () => {
   const { theme, setTheme } = useTheme();
-  const {
-    locations,
-    addLocation,
-    updateLocation,
-    deleteLocation,
-    resetDemoData,
-    products,
-  } = useInventory();
+  const { locations, addLocation, updateLocation, deleteLocation, resetDemoData, products } = useInventory();
   const { showToast } = useToast();
 
   // Location drawer
@@ -111,7 +97,7 @@ export const Settings: React.FC = () => {
     if (hasStock) {
       showToast(
         `Cannot delete "${locToDelete.name}" because it currently holds inventory units. Transfer items first.`,
-        'error'
+        'error',
       );
       setLocToDelete(null);
       return;
@@ -127,7 +113,11 @@ export const Settings: React.FC = () => {
   };
 
   const handleExecuteReset = () => {
-    resetDemoData();
+    const result = resetDemoData();
+    if (!result.success) {
+      showToast(result.error, 'error');
+      return;
+    }
     showToast('Demo data restored to initial state.', 'info');
     setIsResetConfirmOpen(false);
   };
@@ -167,15 +157,16 @@ export const Settings: React.FC = () => {
                 <th className="py-2.5 px-3 font-medium">Name</th>
                 <th className="py-2.5 px-3 font-medium">Code</th>
                 <th className="py-2.5 px-3 font-medium">Description</th>
-                <th className="py-2.5 px-3 font-medium text-right">Units on hand</th>
+                <th className="py-2.5 px-3 font-medium text-right">Stock by unit</th>
                 <th className="py-2.5 px-3 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-subtle)]">
               {locations.map((loc) => {
-                const totalUnits = products.reduce(
-                  (sum, p) => sum + (p.locationStock[loc.id] || 0),
-                  0
+                const totalUnits = quantitySummary(
+                  products
+                    .filter((p) => (p.locationStock[loc.id] ?? 0) > 0)
+                    .map((p) => ({ quantity: p.locationStock[loc.id], unit: p.unit })),
                 );
                 return (
                   <tr key={loc.id} className="hover:bg-[var(--surface-secondary)] transition-colors">
@@ -184,9 +175,7 @@ export const Settings: React.FC = () => {
                     <td className="py-2.5 px-3 text-[var(--text-secondary)]">
                       {loc.description || 'Facility zone'}
                     </td>
-                    <td className="py-2.5 px-3 text-right font-medium text-[var(--text)]">
-                      {totalUnits.toLocaleString()} units
-                    </td>
+                    <td className="py-2.5 px-3 text-right font-medium text-[var(--text)]">{totalUnits}</td>
                     <td className="py-2.5 px-3 text-right space-x-2">
                       <button
                         onClick={() => handleOpenEdit(loc)}
@@ -213,9 +202,7 @@ export const Settings: React.FC = () => {
       <section className="space-y-3 pt-2">
         <div>
           <h2 className="text-sm font-semibold text-[var(--text)]">Appearance</h2>
-          <p className="text-xs text-[var(--text-secondary)]">
-            Choose how StockSense looks to you.
-          </p>
+          <p className="text-xs text-[var(--text-secondary)]">Choose how StockSense looks to you.</p>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -230,9 +217,7 @@ export const Settings: React.FC = () => {
           >
             <Sun className="w-4 h-4 mb-2 text-[var(--text)]" />
             <div className="font-medium text-[var(--text)]">Light</div>
-            <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
-              Warm off-white background
-            </div>
+            <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">Warm off-white background</div>
           </button>
 
           <button
@@ -297,8 +282,11 @@ export const Settings: React.FC = () => {
           )}
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Location name *</label>
+            <label htmlFor="settings-field-0" className="text-[var(--text-secondary)] font-medium">
+              Location name *
+            </label>
             <input
+              id="settings-field-0"
               type="text"
               required
               value={locName}
@@ -309,8 +297,11 @@ export const Settings: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Code (Identifier) *</label>
+            <label htmlFor="settings-field-1" className="text-[var(--text-secondary)] font-medium">
+              Code (Identifier) *
+            </label>
             <input
+              id="settings-field-1"
               type="text"
               required
               value={locCode}
@@ -321,8 +312,11 @@ export const Settings: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Description</label>
+            <label htmlFor="settings-field-2" className="text-[var(--text-secondary)] font-medium">
+              Description
+            </label>
             <input
+              id="settings-field-2"
               type="text"
               value={locDesc}
               onChange={(e) => setLocDesc(e.target.value)}

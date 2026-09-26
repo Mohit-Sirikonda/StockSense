@@ -1,27 +1,21 @@
 import React, { useState, useMemo } from 'react';
-import {
-  Plus,
-  Search,
-  ChevronRight,
-  ArrowRight,
-  Edit2,
-  Trash2,
-  AlertCircle,
-  Lock,
-} from 'lucide-react';
+import { Plus, Search, ChevronRight, ArrowRight, Edit2, Trash2, AlertCircle, Lock } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { Product } from '../types';
+import { stockAt, productInWarehouse, movementInWarehouse, ledgerMovement } from '../domain/selectors';
 
 export const Products: React.FC = () => {
   const {
     products,
+    can,
     locations,
     ledger,
     selectedWarehouseId,
+    setSelectedWarehouseId,
     addProduct,
     updateProduct,
     deleteProduct,
@@ -35,9 +29,8 @@ export const Products: React.FC = () => {
   // Search & Filter state
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
-  const [locationFilter, setLocationFilter] = useState<string>(
-    isStaff ? assignedWarehouseId : selectedWarehouseId || 'all'
-  );
+  const locationFilter = selectedWarehouseId;
+  const setLocationFilter = setSelectedWarehouseId;
   const [statusFilter, setStatusFilter] = useState('all');
 
   // Detail drawer state
@@ -55,7 +48,7 @@ export const Products: React.FC = () => {
   const [formInitialStock, setFormInitialStock] = useState('0');
   const [formReorderLevel, setFormReorderLevel] = useState('10');
   const [formLocation, setFormLocation] = useState(
-    isStaff ? assignedWarehouseId : locations[0]?.id || 'loc-main'
+    isStaff ? assignedWarehouseId : locations[0]?.id || 'loc-main',
   );
   const [formError, setFormError] = useState('');
 
@@ -63,13 +56,6 @@ export const Products: React.FC = () => {
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
   // Sync with global warehouse selector or staff assignment
-  React.useEffect(() => {
-    if (isStaff) {
-      setLocationFilter(assignedWarehouseId);
-    } else if (selectedWarehouseId !== 'all') {
-      setLocationFilter(selectedWarehouseId);
-    }
-  }, [isStaff, assignedWarehouseId, selectedWarehouseId]);
 
   // Categories list
   const categories = useMemo(() => {
@@ -88,14 +74,15 @@ export const Products: React.FC = () => {
       isStaff
         ? assignedWarehouseId
         : selectedWarehouseId !== 'all'
-        ? selectedWarehouseId
-        : locations[0]?.id || 'loc-main'
+          ? selectedWarehouseId
+          : locations[0]?.id || 'loc-main',
     );
     setFormError('');
     setIsFormDrawerOpen(true);
   };
 
   const handleOpenEdit = (prod: Product) => {
+    setSelectedProduct(null);
     setEditingProduct(prod);
     setFormName(prod.name);
     setFormSku(prod.sku);
@@ -129,8 +116,8 @@ export const Products: React.FC = () => {
       return;
     }
 
-    const reorder = parseInt(formReorderLevel, 10);
-    if (isNaN(reorder) || reorder < 0) {
+    const reorder = formReorderLevel.trim() === '' ? NaN : Number(formReorderLevel);
+    if (!Number.isFinite(reorder) || reorder < 0) {
       setFormError('Reorder level must be a non-negative number.');
       return;
     }
@@ -153,19 +140,11 @@ export const Products: React.FC = () => {
       showToast(`Product "${formName}" updated.`, 'success');
       setIsFormDrawerOpen(false);
       if (selectedProduct?.id === editingProduct.id) {
-        setSelectedProduct({
-          ...selectedProduct,
-          name: formName.trim(),
-          sku: formSku.trim(),
-          category: formCategory.trim(),
-          unit: formUnit.trim(),
-          reorderLevel: reorder,
-          primaryLocationId: formLocation,
-        });
+        setSelectedProduct(res.data);
       }
     } else {
-      const initStock = parseInt(formInitialStock, 10);
-      if (isNaN(initStock) || initStock < 0) {
+      const initStock = formInitialStock.trim() === '' ? 0 : Number(formInitialStock);
+      if (!Number.isFinite(initStock) || initStock < 0) {
         setFormError('Initial stock cannot be negative.');
         return;
       }
@@ -222,19 +201,8 @@ export const Products: React.FC = () => {
 
       const matchesCategory = categoryFilter === 'all' || prod.category === categoryFilter;
 
-      let matchesLocation = true;
-      if (isStaff) {
-        // Staff view is scoped to products relevant to assigned warehouse
-        const qtyAtLoc = prod.locationStock[assignedWarehouseId] || 0;
-        matchesLocation = qtyAtLoc > 0 || prod.primaryLocationId === assignedWarehouseId;
-      } else if (locationFilter !== 'all') {
-        const qtyAtLoc = prod.locationStock[locationFilter] || 0;
-        matchesLocation = qtyAtLoc > 0 || prod.primaryLocationId === locationFilter;
-      }
-
-      const stockToCheck = isStaff
-        ? prod.locationStock[assignedWarehouseId] || 0
-        : prod.stock;
+      const matchesLocation = productInWarehouse(prod, locationFilter);
+      const stockToCheck = stockAt(prod, locationFilter);
 
       let matchesStatus = true;
       if (statusFilter === 'in-stock') {
@@ -252,23 +220,14 @@ export const Products: React.FC = () => {
   // Product ledger audit items for the detail drawer
   const productMovementHistory = useMemo(() => {
     if (!selectedProduct) return [];
-    const list = ledger.filter((l) => l.productId === selectedProduct.id);
-    if (isStaff) {
-      return list
-        .filter((l) =>
-          Boolean(
-            l.fromLocationId === assignedWarehouseId ||
-            l.toLocationId === assignedWarehouseId ||
-            (l.fromLocationName &&
-              l.fromLocationName.toLowerCase().includes(assignedWarehouse.toLowerCase())) ||
-            (l.toLocationName &&
-              l.toLocationName.toLowerCase().includes(assignedWarehouse.toLowerCase()))
-          )
-        )
-        .slice(0, 8);
-    }
-    return list.slice(0, 8);
-  }, [selectedProduct, ledger, isStaff, assignedWarehouseId, assignedWarehouse]);
+    return ledger
+      .filter(
+        (l) =>
+          l.productId === selectedProduct.id &&
+          movementInWarehouse(l.fromLocationId, l.toLocationId, locationFilter),
+      )
+      .slice(0, 8);
+  }, [selectedProduct, ledger, locationFilter]);
 
   return (
     <div className="space-y-6">
@@ -283,13 +242,15 @@ export const Products: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenAdd}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors self-start sm:self-auto"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>Add product</span>
-        </button>
+        {can('createProduct') && (
+          <button
+            onClick={handleOpenAdd}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors self-start sm:self-auto"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Add product</span>
+          </button>
+        )}
       </div>
 
       {/* 2. Search & Filter Bar */}
@@ -307,6 +268,7 @@ export const Products: React.FC = () => {
 
         <div>
           <select
+            aria-label="Product category filter"
             value={categoryFilter}
             onChange={(e) => setCategoryFilter(e.target.value)}
             className="w-full px-2.5 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -328,6 +290,7 @@ export const Products: React.FC = () => {
             </div>
           ) : (
             <select
+              aria-label="Product location filter"
               value={locationFilter}
               onChange={(e) => setLocationFilter(e.target.value)}
               className="w-full px-2.5 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -344,6 +307,7 @@ export const Products: React.FC = () => {
 
         <div>
           <select
+            aria-label="Product stock status"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="w-full px-2.5 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -366,7 +330,7 @@ export const Products: React.FC = () => {
               <th className="py-2.5 px-3 font-medium">Category</th>
               <th className="py-2.5 px-3 font-medium">Primary location</th>
               <th className="py-2.5 px-3 font-medium text-right">
-                {isStaff ? 'Facility Stock' : 'Stock'}
+                {locationFilter === 'all' ? 'Company stock' : 'Location stock'}
               </th>
               <th className="py-2.5 px-3 font-medium text-right">Reorder level</th>
               <th className="py-2.5 px-3 font-medium">Status</th>
@@ -381,9 +345,7 @@ export const Products: React.FC = () => {
               </tr>
             ) : (
               filteredProducts.map((prod) => {
-                const displayedStock = isStaff
-                  ? prod.locationStock[assignedWarehouseId] || 0
-                  : prod.stock;
+                const displayedStock = stockAt(prod, locationFilter);
                 const isOut = displayedStock === 0;
                 const isLow = displayedStock > 0 && displayedStock <= prod.reorderLevel;
                 const statusLabel = isOut ? 'Out of stock' : isLow ? 'Low stock' : 'In stock';
@@ -395,18 +357,12 @@ export const Products: React.FC = () => {
                     onClick={() => setSelectedProduct(prod)}
                     className="hover:bg-[var(--surface-secondary)] cursor-pointer transition-colors"
                   >
-                    <td className="py-2.5 px-3 font-medium text-[var(--text)]">
-                      {prod.name}
-                    </td>
+                    <td className="py-2.5 px-3 font-medium text-[var(--text)]">{prod.name}</td>
                     <td className="py-2.5 px-3 font-mono text-[var(--text-secondary)] text-[11px]">
                       {prod.sku}
                     </td>
-                    <td className="py-2.5 px-3 text-[var(--text-secondary)]">
-                      {prod.category}
-                    </td>
-                    <td className="py-2.5 px-3 text-[var(--text-secondary)]">
-                      {locName}
-                    </td>
+                    <td className="py-2.5 px-3 text-[var(--text-secondary)]">{prod.category}</td>
+                    <td className="py-2.5 px-3 text-[var(--text-secondary)]">{locName}</td>
                     <td className="py-2.5 px-3 text-right font-medium text-[var(--text)]">
                       {displayedStock.toLocaleString()}{' '}
                       <span className="text-[10px] text-[var(--text-secondary)] font-normal">
@@ -414,8 +370,7 @@ export const Products: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-2.5 px-3 text-right text-[var(--text-secondary)]">
-                      {prod.reorderLevel}{' '}
-                      <span className="text-[10px]">{prod.unit}</span>
+                      {prod.reorderLevel} <span className="text-[10px]">{prod.unit}</span>
                     </td>
                     <td className="py-2.5 px-3">
                       <StatusBadge status={statusLabel} size="sm" />
@@ -447,21 +402,14 @@ export const Products: React.FC = () => {
           {/* Stock Section */}
           <div className="space-y-1">
             <div className="text-xs text-[var(--text-secondary)]">
-              {isStaff ? `Stock at ${assignedWarehouse}` : 'Total stock on hand'}
+              {locationFilter === 'all'
+                ? 'Company stock on hand'
+                : `Stock at ${getLocationName(locationFilter)}`}
             </div>
             <div className="text-2xl font-semibold text-[var(--text)]">
-              {isStaff
-                ? (selectedProduct.locationStock[assignedWarehouseId] || 0).toLocaleString()
-                : selectedProduct.stock.toLocaleString()}{' '}
-              <span className="text-sm font-normal text-[var(--text-secondary)]">
-                {selectedProduct.unit}
-              </span>
+              {stockAt(selectedProduct, locationFilter).toLocaleString()}{' '}
+              <span className="text-sm font-normal text-[var(--text-secondary)]">{selectedProduct.unit}</span>
             </div>
-            {isStaff && (
-              <div className="text-[11px] text-[var(--text-secondary)]">
-                Total company stock: {selectedProduct.stock} {selectedProduct.unit}
-              </div>
-            )}
           </div>
 
           <div className="border-t border-[var(--border-subtle)] pt-4 space-y-2">
@@ -470,7 +418,7 @@ export const Products: React.FC = () => {
               {selectedProduct.reorderLevel} {selectedProduct.unit}
             </div>
             <p className="text-[11px] text-[var(--text-secondary)]">
-              {selectedProduct.stock <= selectedProduct.reorderLevel ? (
+              {stockAt(selectedProduct, locationFilter) <= selectedProduct.reorderLevel ? (
                 <span className="text-[var(--warning)] font-medium">
                   Current stock is at or below the safety threshold.
                 </span>
@@ -484,36 +432,36 @@ export const Products: React.FC = () => {
           <div className="border-t border-[var(--border-subtle)] pt-4 space-y-2">
             <div className="text-xs font-medium text-[var(--text)]">Locations</div>
             <div className="divide-y divide-[var(--border-subtle)] text-xs">
-              {locations.map((loc) => {
-                const qty = selectedProduct.locationStock[loc.id] || 0;
-                const isPrimary = loc.id === selectedProduct.primaryLocationId;
-                const isUserWarehouse = loc.id === assignedWarehouseId;
-                return (
-                  <div
-                    key={loc.id}
-                    className={`py-2 flex items-center justify-between ${
-                      isStaff && isUserWarehouse ? 'font-medium text-[var(--text)]' : ''
-                    }`}
-                  >
-                    <div>
-                      <span className="text-[var(--text)]">{loc.name}</span>
-                      {isPrimary && (
-                        <span className="text-[10px] text-[var(--text-secondary)] ml-1.5">
-                          (primary)
-                        </span>
-                      )}
-                      {isStaff && isUserWarehouse && (
-                        <span className="text-[10px] text-[var(--accent)] ml-1.5">
-                          (your assigned location)
-                        </span>
-                      )}
+              {locations
+                .filter((loc) => locationFilter === 'all' || loc.id === locationFilter)
+                .map((loc) => {
+                  const qty = selectedProduct.locationStock[loc.id] || 0;
+                  const isPrimary = loc.id === selectedProduct.primaryLocationId;
+                  const isUserWarehouse = loc.id === assignedWarehouseId;
+                  return (
+                    <div
+                      key={loc.id}
+                      className={`py-2 flex items-center justify-between ${
+                        isStaff && isUserWarehouse ? 'font-medium text-[var(--text)]' : ''
+                      }`}
+                    >
+                      <div>
+                        <span className="text-[var(--text)]">{loc.name}</span>
+                        {isPrimary && (
+                          <span className="text-[10px] text-[var(--text-secondary)] ml-1.5">(primary)</span>
+                        )}
+                        {isStaff && isUserWarehouse && (
+                          <span className="text-[10px] text-[var(--accent)] ml-1.5">
+                            (your assigned location)
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-medium text-[var(--text)] font-mono">
+                        {qty} {selectedProduct.unit}
+                      </span>
                     </div>
-                    <span className="font-medium text-[var(--text)] font-mono">
-                      {qty} {selectedProduct.unit}
-                    </span>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           </div>
 
@@ -527,21 +475,24 @@ export const Products: React.FC = () => {
             ) : (
               <div className="divide-y divide-[var(--border-subtle)] text-xs font-mono">
                 {productMovementHistory.map((m) => {
-                  const isPositive = m.quantityChange > 0;
+                  const movement = ledgerMovement(m, locationFilter);
+                  const isPositive = movement.tone === 'positive';
                   const time = m.timestamp.includes('T') ? m.timestamp.split('T')[0] : m.timestamp;
                   return (
                     <div key={m.id} className="py-1.5 flex items-center justify-between">
                       <div className="space-x-2">
                         <span
                           className={`font-medium ${
-                            isPositive ? 'text-[var(--success)]' : 'text-[var(--danger)]'
+                            isPositive
+                              ? 'text-[var(--success)]'
+                              : movement.tone === 'negative'
+                                ? 'text-[var(--danger)]'
+                                : 'text-[var(--text-secondary)]'
                           }`}
                         >
-                          {isPositive ? `+${m.quantityChange}` : m.quantityChange} {m.unit}
+                          {movement.text}
                         </span>
-                        <span className="text-[var(--text-secondary)] font-sans">
-                          {m.operationType}
-                        </span>
+                        <span className="text-[var(--text-secondary)] font-sans">{m.operationType}</span>
                       </div>
                       <span className="text-[10px] text-[var(--text-secondary)]">{time}</span>
                     </div>
@@ -552,31 +503,33 @@ export const Products: React.FC = () => {
           </div>
 
           {/* Actions */}
-          <div className="border-t border-[var(--border)] pt-5 space-y-2">
-            <div className="text-xs font-medium text-[var(--text)]">Actions</div>
-            <div className={`grid ${isStaff ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
-              <button
-                onClick={() => {
-                  handleOpenEdit(selectedProduct);
-                }}
-                className="w-full py-1.5 px-3 text-xs font-medium border border-[var(--border)] rounded text-[var(--text)] hover:bg-[var(--surface-secondary)] text-center transition-colors"
-              >
-                Edit product
-              </button>
-
-              {/* Delete product button is restricted from Warehouse Staff */}
-              {!isStaff && (
+          {can('editProduct') && (
+            <div className="border-t border-[var(--border)] pt-5 space-y-2">
+              <div className="text-xs font-medium text-[var(--text)]">Actions</div>
+              <div className={`grid ${isStaff ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
                 <button
                   onClick={() => {
-                    setProductToDelete(selectedProduct);
+                    handleOpenEdit(selectedProduct);
                   }}
-                  className="w-full py-1.5 px-3 text-xs font-medium border border-[var(--danger)]/30 rounded text-[var(--danger)] hover:bg-[var(--danger-subtle)] text-center transition-colors"
+                  className="w-full py-1.5 px-3 text-xs font-medium border border-[var(--border)] rounded text-[var(--text)] hover:bg-[var(--surface-secondary)] text-center transition-colors"
                 >
-                  Delete product
+                  Edit product
                 </button>
-              )}
+
+                {/* Delete product button is restricted from Warehouse Staff */}
+                {can('deleteProduct') && (
+                  <button
+                    onClick={() => {
+                      setProductToDelete(selectedProduct);
+                    }}
+                    className="w-full py-1.5 px-3 text-xs font-medium border border-[var(--danger)]/30 rounded text-[var(--danger)] hover:bg-[var(--danger-subtle)] text-center transition-colors"
+                  >
+                    Delete product
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </SlideOverDrawer>
       )}
 
@@ -597,8 +550,11 @@ export const Products: React.FC = () => {
           )}
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Product name *</label>
+            <label htmlFor="products-field-0" className="text-[var(--text-secondary)] font-medium">
+              Product name *
+            </label>
             <input
+              id="products-field-0"
               type="text"
               required
               value={formName}
@@ -610,8 +566,11 @@ export const Products: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">SKU code *</label>
+              <label htmlFor="products-field-1" className="text-[var(--text-secondary)] font-medium">
+                SKU code *
+              </label>
               <input
+                id="products-field-1"
                 type="text"
                 required
                 value={formSku}
@@ -622,8 +581,11 @@ export const Products: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Category *</label>
+              <label htmlFor="products-field-2" className="text-[var(--text-secondary)] font-medium">
+                Category *
+              </label>
               <input
+                id="products-field-2"
                 type="text"
                 required
                 value={formCategory}
@@ -636,24 +598,33 @@ export const Products: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Unit of measure *</label>
+              <label htmlFor="products-field-3" className="text-[var(--text-secondary)] font-medium">
+                Unit of measure *
+              </label>
               <select
+                id="products-field-3"
                 value={formUnit}
                 onChange={(e) => setFormUnit(e.target.value)}
                 className="w-full px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
               >
-                <option value="pcs">Pieces (pcs)</option>
-                <option value="kg">Kilograms (kg)</option>
-                <option value="m">Meters (m)</option>
-                <option value="box">Boxes (box)</option>
-                <option value="bags">Bags (bags)</option>
+                {Array.from(new Set([...products.map((p) => p.unit), 'pcs', 'kg', 'meters', 'boxes', 'bags']))
+                  .sort()
+                  .map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit}
+                    </option>
+                  ))}
               </select>
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Reorder level *</label>
+              <label htmlFor="products-field-4" className="text-[var(--text-secondary)] font-medium">
+                Reorder level *
+              </label>
               <input
+                id="products-field-4"
                 type="number"
+                step="any"
                 min="0"
                 required
                 value={formReorderLevel}
@@ -664,8 +635,11 @@ export const Products: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Primary location *</label>
+            <label htmlFor="products-field-5" className="text-[var(--text-secondary)] font-medium">
+              Primary location *
+            </label>
             <select
+              id="products-field-5"
               value={formLocation}
               onChange={(e) => setFormLocation(e.target.value)}
               disabled={isStaff}
@@ -686,9 +660,13 @@ export const Products: React.FC = () => {
 
           {!editingProduct && (
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Initial stock quantity</label>
+              <label htmlFor="products-field-6" className="text-[var(--text-secondary)] font-medium">
+                Initial stock quantity
+              </label>
               <input
+                id="products-field-6"
                 type="number"
+                step="any"
                 min="0"
                 value={formInitialStock}
                 onChange={(e) => setFormInitialStock(e.target.value)}

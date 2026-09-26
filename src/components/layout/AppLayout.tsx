@@ -1,41 +1,36 @@
 import React from 'react';
-import { TopNavigation, NavPage } from './TopNavigation';
-import { ToastContainer } from '../ui/ToastContainer';
-
-interface AppLayoutProps {
+import { TopNavigation, type NavPage } from './TopNavigation';
+import { useInventory } from '../../context/InventoryContext';
+import { useTheme } from '../../context/ThemeContext';
+interface Props {
   currentPage: NavPage;
   onNavigate: (page: NavPage) => void;
   children: React.ReactNode;
 }
-
-export const AppLayout: React.FC<AppLayoutProps> = ({
-  currentPage,
-  onNavigate,
-  children,
-}) => {
+export const AppLayout: React.FC<Props> = ({ currentPage, onNavigate, children }) => {
+  const { selectionError } = useInventory();
+  const { themeError } = useTheme();
   return (
-    <div className="min-h-screen bg-[var(--bg)] text-[var(--text)] flex flex-col font-sans transition-colors duration-150">
-      {/* Editorial Top Navigation */}
+    <div className="app-shell">
       <TopNavigation currentPage={currentPage} onNavigate={onNavigate} />
-
-      {/* Main Content Area */}
-      <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 py-6">
-        {children}
-      </main>
-
-      {/* Quiet Footer */}
-      <footer className="border-t border-[var(--border)] px-4 sm:px-6 py-3 text-xs text-[var(--text-secondary)]">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>StockSense Inventory Management</span>
-          <div className="flex items-center gap-4 text-[11px]">
-            <span>Local reactive storage</span>
-            <span>•</span>
-            <span>Verified immutable ledger</span>
+      <main className="app-main">
+        {(selectionError || themeError) && (
+          <div role="alert" className="notice error mb-5">
+            {selectionError || themeError}
           </div>
+        )}
+        <div className="page-content" key={currentPage}>
+          {children}
         </div>
-      </footer>
-
-      <ToastContainer />
+        <footer className="app-footer">
+          <span>
+            StockSense <span className="footer-divider">/</span> Inventory operations
+          </span>
+          <span>
+            <span className="status-dot" /> Browser demo · Single workspace
+          </span>
+        </footer>
+      </main>
     </div>
   );
 };

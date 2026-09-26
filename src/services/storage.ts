@@ -1,13 +1,4 @@
-import {
-  Location,
-  Product,
-  Receipt,
-  Delivery,
-  Transfer,
-  Adjustment,
-  LedgerEntry,
-  AuthSession,
-} from '../types';
+import type { AuthSession, InventorySnapshot } from '../types';
 import {
   INITIAL_LOCATIONS,
   INITIAL_PRODUCTS,
@@ -17,164 +8,113 @@ import {
   INITIAL_ADJUSTMENTS,
   INITIAL_LEDGER,
 } from '../data/seedData';
+import { canonicalSession, editableProfile, validateAccounts } from '../domain/accounts';
+import type { AccountData } from '../types';
+export { canonicalSession } from '../domain/accounts';
+export type { AccountData, EditableProfile } from '../types';
+import { validateInventory } from '../domain/validation';
 
-const KEYS = {
-  LOCATIONS: 'stocksense_locations',
-  PRODUCTS: 'stocksense_products',
-  RECEIPTS: 'stocksense_receipts',
-  DELIVERIES: 'stocksense_deliveries',
-  TRANSFERS: 'stocksense_transfers',
-  ADJUSTMENTS: 'stocksense_adjustments',
-  LEDGER: 'stocksense_ledger',
-  SESSION: 'stocksense_session',
-  THEME: 'stocksense_theme',
-  SELECTED_WAREHOUSE: 'stocksense_selected_warehouse',
-};
+export const INVENTORY_KEY = 'stocksense_inventory_v1';
+export const ACCOUNT_KEY = 'stocksense_account_v1';
+const legacyKeys = [
+  'locations',
+  'products',
+  'receipts',
+  'deliveries',
+  'transfers',
+  'adjustments',
+  'ledger',
+] as const;
+export const errorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'An unexpected error occurred.';
 
-function safeGet<T>(key: string, fallback: T): T {
-  try {
-    const item = localStorage.getItem(key);
-    if (!item) return fallback;
-    return JSON.parse(item) as T;
-  } catch (err) {
-    console.error(`Error reading ${key} from localStorage:`, err);
-    return fallback;
-  }
+export function seedInventory(): InventorySnapshot {
+  return structuredClone({
+    version: 1,
+    locations: INITIAL_LOCATIONS,
+    products: INITIAL_PRODUCTS,
+    receipts: INITIAL_RECEIPTS,
+    deliveries: INITIAL_DELIVERIES,
+    transfers: INITIAL_TRANSFERS,
+    adjustments: INITIAL_ADJUSTMENTS,
+    ledger: INITIAL_LEDGER,
+    submittedRequests: {},
+  });
 }
 
-function safeSet<T>(key: string, value: T): void {
+function read(key: string): unknown {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`Saved data (${key}) is not valid JSON. The original data has been preserved.`);
+  }
+}
+function write(key: string, value: unknown): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
-  } catch (err) {
-    console.error(`Error writing ${key} to localStorage:`, err);
+  } catch {
+    throw new Error(
+      'Could not save changes in this browser. Check available storage and browser permissions, then retry. No changes were applied.',
+    );
   }
 }
 
 export const StorageService = {
-  // Initialization of baseline inventory structures only
-  initStorage(): void {
-    if (!localStorage.getItem(KEYS.LOCATIONS)) {
-      safeSet(KEYS.LOCATIONS, INITIAL_LOCATIONS);
+  loadInventory(): InventorySnapshot {
+    const saved = read(INVENTORY_KEY);
+    if (saved !== undefined) {
+      validateInventory(saved);
+      return saved;
     }
-    if (!localStorage.getItem(KEYS.PRODUCTS)) {
-      safeSet(KEYS.PRODUCTS, INITIAL_PRODUCTS);
-    }
-    if (!localStorage.getItem(KEYS.RECEIPTS)) {
-      safeSet(KEYS.RECEIPTS, INITIAL_RECEIPTS);
-    }
-    if (!localStorage.getItem(KEYS.DELIVERIES)) {
-      safeSet(KEYS.DELIVERIES, INITIAL_DELIVERIES);
-    }
-    if (!localStorage.getItem(KEYS.TRANSFERS)) {
-      safeSet(KEYS.TRANSFERS, INITIAL_TRANSFERS);
-    }
-    if (!localStorage.getItem(KEYS.ADJUSTMENTS)) {
-      safeSet(KEYS.ADJUSTMENTS, INITIAL_ADJUSTMENTS);
-    }
-    if (!localStorage.getItem(KEYS.LEDGER)) {
-      safeSet(KEYS.LEDGER, INITIAL_LEDGER);
-    }
-    // Clean up any legacy single-flag auth keys if present
-    localStorage.removeItem('stocksense_is_authenticated');
-    localStorage.removeItem('stocksense_user');
+    const legacy = legacyKeys.map((key) => read(`stocksense_${key}`));
+    if (legacy.every((value) => value === undefined)) return seedInventory();
+    if (legacy.some((value) => value === undefined))
+      throw new Error(
+        'The saved inventory is incomplete. Existing data has been preserved; restore the missing data or explicitly reset the demo.',
+      );
+    const migrated = {
+      version: 1,
+      ...Object.fromEntries(legacyKeys.map((key, i) => [key, legacy[i]])),
+      submittedRequests: {},
+    };
+    validateInventory(migrated);
+    return migrated; // Read-only migration. Old keys remain untouched until a successful command writes v1.
   },
-
-  // Reset demo inventory data without affecting active session
-  resetAllData(): void {
-    safeSet(KEYS.LOCATIONS, INITIAL_LOCATIONS);
-    safeSet(KEYS.PRODUCTS, INITIAL_PRODUCTS);
-    safeSet(KEYS.RECEIPTS, INITIAL_RECEIPTS);
-    safeSet(KEYS.DELIVERIES, INITIAL_DELIVERIES);
-    safeSet(KEYS.TRANSFERS, INITIAL_TRANSFERS);
-    safeSet(KEYS.ADJUSTMENTS, INITIAL_ADJUSTMENTS);
-    safeSet(KEYS.LEDGER, INITIAL_LEDGER);
-    // Note: Do NOT recreate or destroy authentication session during demo reset
+  saveInventory(snapshot: InventorySnapshot): void {
+    validateInventory(snapshot);
+    write(INVENTORY_KEY, snapshot);
   },
-
-  // Session & Authentication
-  getSession(): AuthSession | null {
-    return safeGet<AuthSession | null>(KEYS.SESSION, null);
+  loadAccounts(): AccountData {
+    const saved = read(ACCOUNT_KEY);
+    if (saved !== undefined) return validateAccounts(saved);
+    const session = canonicalSession(read('stocksense_session'));
+    return validateAccounts({
+      version: 1,
+      session,
+      profiles: session ? { [session.id]: editableProfile(session) } : {},
+    });
   },
-  setSession(session: AuthSession): void {
-    safeSet(KEYS.SESSION, session);
+  saveAccounts(data: AccountData) {
+    write(ACCOUNT_KEY, validateAccounts(data));
   },
-  clearSession(): void {
-    try {
-      localStorage.removeItem(KEYS.SESSION);
-    } catch (err) {
-      console.error('Error clearing session from localStorage:', err);
-    }
-  },
-
-  // Locations
-  getLocations(): Location[] {
-    return safeGet<Location[]>(KEYS.LOCATIONS, INITIAL_LOCATIONS);
-  },
-  setLocations(locations: Location[]): void {
-    safeSet(KEYS.LOCATIONS, locations);
-  },
-
-  // Products
-  getProducts(): Product[] {
-    return safeGet<Product[]>(KEYS.PRODUCTS, INITIAL_PRODUCTS);
-  },
-  setProducts(products: Product[]): void {
-    safeSet(KEYS.PRODUCTS, products);
-  },
-
-  // Receipts
-  getReceipts(): Receipt[] {
-    return safeGet<Receipt[]>(KEYS.RECEIPTS, INITIAL_RECEIPTS);
-  },
-  setReceipts(receipts: Receipt[]): void {
-    safeSet(KEYS.RECEIPTS, receipts);
-  },
-
-  // Deliveries
-  getDeliveries(): Delivery[] {
-    return safeGet<Delivery[]>(KEYS.DELIVERIES, INITIAL_DELIVERIES);
-  },
-  setDeliveries(deliveries: Delivery[]): void {
-    safeSet(KEYS.DELIVERIES, deliveries);
-  },
-
-  // Transfers
-  getTransfers(): Transfer[] {
-    return safeGet<Transfer[]>(KEYS.TRANSFERS, INITIAL_TRANSFERS);
-  },
-  setTransfers(transfers: Transfer[]): void {
-    safeSet(KEYS.TRANSFERS, transfers);
-  },
-
-  // Adjustments
-  getAdjustments(): Adjustment[] {
-    return safeGet<Adjustment[]>(KEYS.ADJUSTMENTS, INITIAL_ADJUSTMENTS);
-  },
-  setAdjustments(adjustments: Adjustment[]): void {
-    safeSet(KEYS.ADJUSTMENTS, adjustments);
-  },
-
-  // Ledger
-  getLedger(): LedgerEntry[] {
-    return safeGet<LedgerEntry[]>(KEYS.LEDGER, INITIAL_LEDGER);
-  },
-  setLedger(ledger: LedgerEntry[]): void {
-    safeSet(KEYS.LEDGER, ledger);
-  },
-
-  // Theme
   getTheme(): 'light' | 'dark' {
-    return safeGet<'light' | 'dark'>(KEYS.THEME, 'light');
+    const theme = read('stocksense_theme');
+    if (theme !== undefined && theme !== 'light' && theme !== 'dark')
+      throw new Error('Saved theme is invalid.');
+    return (theme as 'light' | 'dark' | undefined) ?? 'light';
   },
-  setTheme(theme: 'light' | 'dark'): void {
-    safeSet(KEYS.THEME, theme);
+  setTheme(theme: 'light' | 'dark') {
+    write('stocksense_theme', theme);
   },
-
-  // Warehouse selection
   getSelectedWarehouse(): string {
-    return safeGet<string>(KEYS.SELECTED_WAREHOUSE, 'all');
+    const value = read('stocksense_selected_warehouse');
+    if (value !== undefined && (typeof value !== 'string' || !value))
+      throw new Error('Saved warehouse selection is invalid.');
+    return (value as string | undefined) ?? 'all';
   },
-  setSelectedWarehouse(id: string): void {
-    safeSet(KEYS.SELECTED_WAREHOUSE, id);
+  setSelectedWarehouse(id: string) {
+    write('stocksense_selected_warehouse', id);
   },
 };

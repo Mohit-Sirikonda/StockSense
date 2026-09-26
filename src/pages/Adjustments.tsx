@@ -1,14 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import {
-  Plus,
-  Search,
-  AlertCircle,
-  Lock,
-} from 'lucide-react';
+import { Plus, Search, AlertCircle, Lock } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
 import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
 import { Adjustment } from '../types';
+import { createId } from '../utils/id';
 
 export const Adjustments: React.FC = () => {
   const {
@@ -24,6 +20,7 @@ export const Adjustments: React.FC = () => {
   } = useInventory();
   const { showToast } = useToast();
 
+  const submissionId = React.useRef(createId());
   const [searchTerm, setSearchTerm] = useState('');
   const [reasonFilter, setReasonFilter] = useState('all');
 
@@ -33,7 +30,11 @@ export const Adjustments: React.FC = () => {
   // Form states
   const [selectedProductId, setSelectedProductId] = useState(products[0]?.id || '');
   const [selectedLocationId, setSelectedLocationId] = useState(
-    isStaff ? assignedWarehouseId : selectedWarehouseId !== 'all' ? selectedWarehouseId : locations[0]?.id || 'loc-main'
+    isStaff
+      ? assignedWarehouseId
+      : selectedWarehouseId !== 'all'
+        ? selectedWarehouseId
+        : locations[0]?.id || 'loc-main',
   );
   const [physicalCount, setPhysicalCount] = useState<string>('0');
   const [reason, setReason] = useState<string>('Inventory Count Discrepancy');
@@ -57,11 +58,12 @@ export const Adjustments: React.FC = () => {
 
   // When opening drawer or changing selection, reset physical count to system quantity
   const handleOpenDrawer = () => {
+    submissionId.current = createId();
     const locId = isStaff
       ? assignedWarehouseId
       : selectedWarehouseId !== 'all'
-      ? selectedWarehouseId
-      : locations[0]?.id || 'loc-main';
+        ? selectedWarehouseId
+        : locations[0]?.id || 'loc-main';
 
     setSelectedProductId(products[0]?.id || '');
     setSelectedLocationId(locId);
@@ -76,10 +78,10 @@ export const Adjustments: React.FC = () => {
     if (isDrawerOpen) {
       setPhysicalCount(currentSystemQty.toString());
     }
-  }, [currentSystemQty, isDrawerOpen]);
+  }, [currentSystemQty, isDrawerOpen, selectedProductId, selectedLocationId]);
 
-  const parsedPhysicalCount = parseInt(physicalCount, 10);
-  const validCount = isNaN(parsedPhysicalCount) ? 0 : parsedPhysicalCount;
+  const parsedPhysicalCount = physicalCount.trim() === '' ? NaN : Number(physicalCount);
+  const validCount = Number.isFinite(parsedPhysicalCount) ? parsedPhysicalCount : 0;
   const difference = validCount - currentSystemQty;
 
   const handleApplyAdjustment = (e: React.FormEvent) => {
@@ -91,7 +93,7 @@ export const Adjustments: React.FC = () => {
       return;
     }
 
-    if (isNaN(parsedPhysicalCount) || parsedPhysicalCount < 0) {
+    if (!Number.isFinite(parsedPhysicalCount) || parsedPhysicalCount < 0) {
       setFormError('Physical count must be a non-negative number.');
       return;
     }
@@ -103,16 +105,19 @@ export const Adjustments: React.FC = () => {
 
     if (!activeProduct) return;
 
-    const res = addAdjustment({
-      productId: selectedProductId,
-      productName: activeProduct.name,
-      sku: activeProduct.sku,
-      unit: activeProduct.unit,
-      locationId: selectedLocationId,
-      physicalCount: parsedPhysicalCount,
-      reason: notes ? `${reason} - ${notes.trim()}` : reason,
-      date: new Date().toISOString().split('T')[0],
-    });
+    const res = addAdjustment(
+      {
+        productId: selectedProductId,
+        productName: activeProduct.name,
+        sku: activeProduct.sku,
+        unit: activeProduct.unit,
+        locationId: selectedLocationId,
+        physicalCount: parsedPhysicalCount,
+        reason: notes ? `${reason} - ${notes.trim()}` : reason,
+        date: new Date().toISOString().split('T')[0],
+      },
+      submissionId.current,
+    );
 
     if (!res.success) {
       setFormError(res.error || 'Failed to apply adjustment');
@@ -120,7 +125,7 @@ export const Adjustments: React.FC = () => {
     } else {
       showToast(
         `Adjustment committed. Difference of ${difference > 0 ? `+${difference}` : difference} recorded in ledger.`,
-        'success'
+        'success',
       );
       setIsDrawerOpen(false);
     }
@@ -128,21 +133,21 @@ export const Adjustments: React.FC = () => {
 
   const filteredAdjustments = useMemo(() => {
     return adjustments.filter((adj) => {
-      if (isStaff && adj.locationId !== assignedWarehouseId) {
+      if (selectedWarehouseId !== 'all' && adj.locationId !== selectedWarehouseId) {
         return false;
       }
 
       const matchesSearch =
         searchTerm === '' ||
         adj.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        adj.productName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        [adj.productName, adj.sku].some((value) => value.toLowerCase().includes(searchTerm.toLowerCase())) ||
         adj.reason.toLowerCase().includes(searchTerm.toLowerCase());
 
       const matchesReason = reasonFilter === 'all' || adj.reason.includes(reasonFilter);
 
       return matchesSearch && matchesReason;
     });
-  }, [adjustments, searchTerm, reasonFilter, isStaff, assignedWarehouseId]);
+  }, [adjustments, searchTerm, reasonFilter, selectedWarehouseId]);
 
   return (
     <div className="space-y-6">
@@ -273,8 +278,11 @@ export const Adjustments: React.FC = () => {
           )}
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Select product *</label>
+            <label htmlFor="adjustments-field-0" className="text-[var(--text-secondary)] font-medium">
+              Select product *
+            </label>
             <select
+              id="adjustments-field-0"
               value={selectedProductId}
               onChange={(e) => setSelectedProductId(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -288,8 +296,11 @@ export const Adjustments: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Location *</label>
+            <label htmlFor="adjustments-field-1" className="text-[var(--text-secondary)] font-medium">
+              Location *
+            </label>
             <select
+              id="adjustments-field-1"
               value={selectedLocationId}
               onChange={(e) => setSelectedLocationId(e.target.value)}
               disabled={isStaff}
@@ -317,10 +328,17 @@ export const Adjustments: React.FC = () => {
             </div>
 
             <div>
-              <div className="text-[11px] text-[var(--text-secondary)] font-medium">Physical count</div>
+              <label
+                htmlFor="physical-count"
+                className="text-[11px] text-[var(--text-secondary)] font-medium"
+              >
+                Physical count
+              </label>
               <input
+                id="physical-count"
                 type="number"
                 min="0"
+                step="any"
                 required
                 value={physicalCount}
                 onChange={(e) => setPhysicalCount(e.target.value)}
@@ -335,8 +353,8 @@ export const Adjustments: React.FC = () => {
                   difference > 0
                     ? 'text-[var(--success)]'
                     : difference < 0
-                    ? 'text-[var(--danger)]'
-                    : 'text-[var(--text-secondary)]'
+                      ? 'text-[var(--danger)]'
+                      : 'text-[var(--text-secondary)]'
                 }`}
               >
                 {difference > 0 ? `+${difference}` : difference} {activeProduct?.unit}
@@ -345,8 +363,11 @@ export const Adjustments: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Reason *</label>
+            <label htmlFor="adjustments-field-2" className="text-[var(--text-secondary)] font-medium">
+              Reason *
+            </label>
             <select
+              id="adjustments-field-2"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -361,8 +382,11 @@ export const Adjustments: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Notes (optional)</label>
+            <label htmlFor="adjustments-field-3" className="text-[var(--text-secondary)] font-medium">
+              Notes (optional)
+            </label>
             <input
+              id="adjustments-field-3"
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
