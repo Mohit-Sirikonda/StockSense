@@ -1,15 +1,18 @@
 import React, { useState } from 'react';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
-import { DEMO_USERS } from '../data/users';
 
 interface LoginProps {
   onSuccess: () => void;
 }
 
 export const Login: React.FC<LoginProps> = ({ onSuccess }) => {
-  const { login } = useInventory();
+  const { login, users } = useInventory();
   const { showToast } = useToast();
+
+  // Reflect the live (persisted) user list so demo shortcuts stay valid
+  // even after accounts are edited or removed via User Management.
+  const adminAccount = users.find((u) => u.role === 'Administrator');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -190,15 +193,15 @@ export const Login: React.FC<LoginProps> = ({ onSuccess }) => {
                 </button>
               </div>
 
-              {DEMO_USERS.length > 2 && (
+              {adminAccount && (
                 <button
                   type="button"
-                  onClick={() => loadPreset('admin@stocksense.demo', 'admin123')}
+                  onClick={() => loadPreset(adminAccount.email, '')}
                   className="w-full p-2 border border-[var(--border)] rounded hover:bg-[var(--surface-secondary)] text-left transition-colors"
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-[var(--text)] text-[11px]">Administrator</span>
-                    <span className="text-[10px] text-[var(--text-secondary)]">Priya Sharma</span>
+                    <span className="text-[10px] text-[var(--text-secondary)]">{adminAccount.name}</span>
                   </div>
                 </button>
               )}
