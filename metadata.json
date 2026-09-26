@@ -1,0 +1,8 @@
+{
+  "name": "StockSense  2",
+  "description": "Centralized inventory intelligence and real-time warehouse stock tracking for every movement.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
