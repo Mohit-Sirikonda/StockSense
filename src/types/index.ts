@@ -100,8 +100,24 @@ export interface LedgerEntry {
   toLocationId?: string;
   toLocationName?: string;
   user: string;
+  userId?: string; // Stable actor identity; legacy entries retain their name snapshot.
   reasonNotes?: string;
 }
+
+export interface InventorySnapshot {
+  version: 1;
+  products: Product[];
+  locations: Location[];
+  receipts: Receipt[];
+  deliveries: Delivery[];
+  transfers: Transfer[];
+  adjustments: Adjustment[];
+  ledger: LedgerEntry[];
+  submittedRequests: Record<string, string>;
+}
+
+export type CommandResult<T = undefined> =
+  { success: true; data: T; error?: never } | { success: false; error: string; data?: never };
 
 export interface UserProfile {
   name: string;

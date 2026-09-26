@@ -1,27 +1,28 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import {
-  Plus,
-  Search,
-  CheckCircle2,
-  Trash2,
-  AlertCircle,
-  Lock,
-} from 'lucide-react';
+import { createId } from '../utils/id';
+import { Plus, Search, CheckCircle2, Trash2, AlertCircle, Lock } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
 import { StatusBadge } from '../components/ui/StatusBadge';
 import { SlideOverDrawer } from '../components/ui/SlideOverDrawer';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { Delivery, OperationStatus, OperationItem } from '../types';
+import { quantitySummary } from '../domain/selectors';
+import { deliveryAvailability } from '../domain/inventory';
 
 export const Deliveries: React.FC = () => {
   const {
     deliveries,
     products,
+    can,
     locations,
     selectedWarehouseId,
+    setSelectedWarehouseId,
     addDelivery,
     validateDelivery,
+    pickDelivery,
+    packDelivery,
+    cancelDelivery,
     getLocationName,
     isStaff,
     assignedWarehouse,
@@ -29,12 +30,11 @@ export const Deliveries: React.FC = () => {
   } = useInventory();
   const { showToast } = useToast();
 
+  const submissionId = React.useRef(createId());
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [warehouseFilter, setWarehouseFilter] = useState<string>(
-    isStaff ? assignedWarehouseId : selectedWarehouseId || 'all'
-  );
-
+  const warehouseFilter = selectedWarehouseId;
+  const setWarehouseFilter = setSelectedWarehouseId;
   // Slide-over drawer states
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [selectedDelivery, setSelectedDelivery] = useState<Delivery | null>(null);
@@ -42,15 +42,13 @@ export const Deliveries: React.FC = () => {
   // Form states
   const [formCustomer, setFormCustomer] = useState('');
   const [formWarehouse, setFormWarehouse] = useState(
-    isStaff ? assignedWarehouseId : locations[0]?.id || 'loc-main'
+    isStaff ? assignedWarehouseId : locations[0]?.id || 'loc-main',
   );
   const [formDate, setFormDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [formNotes, setFormNotes] = useState('');
-  const [formStatus, setFormStatus] = useState<OperationStatus>('Ready');
+  const [formStatus, setFormStatus] = useState<OperationStatus>('Draft');
 
-  const [formItems, setFormItems] = useState<
-    Array<{ productId: string; quantity: number }>
-  >([
+  const [formItems, setFormItems] = useState<Array<{ productId: string; quantity: number }>>([
     {
       productId: products[0]?.id || '',
       quantity: 10,
@@ -61,26 +59,19 @@ export const Deliveries: React.FC = () => {
   // Validate dialog
   const [deliveryToValidate, setDeliveryToValidate] = useState<Delivery | null>(null);
 
-  useEffect(() => {
-    if (isStaff) {
-      setWarehouseFilter(assignedWarehouseId);
-    } else if (selectedWarehouseId !== 'all') {
-      setWarehouseFilter(selectedWarehouseId);
-    }
-  }, [isStaff, assignedWarehouseId, selectedWarehouseId]);
-
   const handleOpenCreate = () => {
+    submissionId.current = createId();
     setFormCustomer('');
     setFormWarehouse(
       isStaff
         ? assignedWarehouseId
         : selectedWarehouseId !== 'all'
-        ? selectedWarehouseId
-        : locations[0]?.id || 'loc-main'
+          ? selectedWarehouseId
+          : locations[0]?.id || 'loc-main',
     );
     setFormDate(new Date().toISOString().split('T')[0]);
     setFormNotes('');
-    setFormStatus('Ready');
+    setFormStatus('Draft');
     setFormItems([
       {
         productId: products[0]?.id || '',
@@ -106,19 +97,15 @@ export const Deliveries: React.FC = () => {
     setFormItems((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const handleItemChange = (
-    index: number,
-    field: 'productId' | 'quantity',
-    value: string | number
-  ) => {
+  const handleItemChange = (index: number, field: 'productId' | 'quantity', value: string | number) => {
     setFormItems((prev) =>
       prev.map((item, i) => {
         if (i !== index) return item;
         return {
           ...item,
-          [field]: field === 'quantity' ? Math.max(1, Number(value) || 0) : value,
+          [field]: field === 'quantity' ? Number(value) : value,
         };
-      })
+      }),
     );
   };
 
@@ -136,23 +123,6 @@ export const Deliveries: React.FC = () => {
       return;
     }
 
-    for (const it of formItems) {
-      if (it.quantity <= 0) {
-        setFormError('All quantities must be greater than zero.');
-        return;
-      }
-
-      const prod = products.find((p) => p.id === it.productId);
-      if (!prod) continue;
-      const currentLocStock = prod.locationStock[formWarehouse] || 0;
-      if (it.quantity > currentLocStock) {
-        setFormError(
-          `Insufficient stock for "${prod.name}" at ${getLocationName(formWarehouse)}. Required: ${it.quantity}, Available: ${currentLocStock}`
-        );
-        return;
-      }
-    }
-
     const processedItems: OperationItem[] = formItems.map((it) => {
       const prod = products.find((p) => p.id === it.productId);
       return {
@@ -164,17 +134,24 @@ export const Deliveries: React.FC = () => {
       };
     });
 
-    const newDelivery = addDelivery({
-      customer: formCustomer.trim(),
-      date: formDate,
-      warehouseId: formWarehouse,
-      notes: formNotes.trim(),
-      items: processedItems,
-      status: formStatus,
-      stage: 'Packed',
-    });
+    const newDelivery = addDelivery(
+      {
+        customer: formCustomer.trim(),
+        date: formDate,
+        warehouseId: formWarehouse,
+        notes: formNotes.trim(),
+        items: processedItems,
+        status: formStatus,
+        stage: 'Draft',
+      },
+      submissionId.current,
+    );
+    if (!newDelivery.success) {
+      setFormError(newDelivery.error);
+      return;
+    }
 
-    showToast(`Delivery ${newDelivery.id} created.`, 'success');
+    showToast(`Delivery ${newDelivery.data.id} created.`, 'success');
     setIsCreateOpen(false);
   };
 
@@ -193,9 +170,9 @@ export const Deliveries: React.FC = () => {
     } else {
       showToast(
         `Delivery ${deliveryToValidate.id} dispatched. Stock deducted from ${getLocationName(
-          deliveryToValidate.warehouseId
+          deliveryToValidate.warehouseId,
         )}.`,
-        'success'
+        'success',
       );
       if (selectedDelivery?.id === deliveryToValidate.id) {
         setSelectedDelivery({ ...selectedDelivery, status: 'Done', stage: 'Validated' });
@@ -204,6 +181,28 @@ export const Deliveries: React.FC = () => {
     setDeliveryToValidate(null);
   };
 
+  function advance(delivery: Delivery) {
+    if (delivery.stage === 'Packed') {
+      setSelectedDelivery(null);
+      setDeliveryToValidate(delivery);
+      return;
+    }
+    const result = delivery.stage === 'Draft' ? pickDelivery(delivery.id) : packDelivery(delivery.id);
+    if (!result.success) {
+      showToast(result.error, 'error');
+      return;
+    }
+    if (selectedDelivery?.id === delivery.id) setSelectedDelivery(result.data);
+    showToast(
+      result.data.stage === 'Picked'
+        ? 'Items picked. Pack the order next.'
+        : 'Items packed. Ready to dispatch.',
+      'success',
+    );
+  }
+  const actionLabel = (delivery: Delivery) =>
+    delivery.stage === 'Draft' ? 'Pick items' : delivery.stage === 'Picked' ? 'Pack items' : 'Dispatch order';
+  const [cancelTarget, setCancelTarget] = useState<Delivery | null>(null);
   const filteredDeliveries = useMemo(() => {
     return deliveries.filter((d) => {
       if (isStaff && d.warehouseId !== assignedWarehouseId) {
@@ -213,11 +212,15 @@ export const Deliveries: React.FC = () => {
       const matchesSearch =
         searchTerm === '' ||
         d.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        d.customer.toLowerCase().includes(searchTerm.toLowerCase());
+        d.customer.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        d.items.some((item) =>
+          [item.sku, item.productName].some((value) =>
+            value.toLowerCase().includes(searchTerm.toLowerCase()),
+          ),
+        );
 
       const matchesStatus = statusFilter === 'all' || d.status === statusFilter;
-      const matchesWarehouse =
-        isStaff || warehouseFilter === 'all' || d.warehouseId === warehouseFilter;
+      const matchesWarehouse = isStaff || warehouseFilter === 'all' || d.warehouseId === warehouseFilter;
 
       return matchesSearch && matchesStatus && matchesWarehouse;
     });
@@ -236,13 +239,15 @@ export const Deliveries: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors self-start sm:self-auto"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>New delivery</span>
-        </button>
+        {can('createDelivery') && (
+          <button
+            onClick={handleOpenCreate}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium transition-colors self-start sm:self-auto"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New delivery</span>
+          </button>
+        )}
       </div>
 
       {/* 2. Toolbar */}
@@ -251,7 +256,7 @@ export const Deliveries: React.FC = () => {
           <Search className="w-3.5 h-3.5 text-[var(--text-secondary)] absolute left-3 top-2.5 pointer-events-none" />
           <input
             type="text"
-            placeholder="Search by reference or customer..."
+            placeholder="Search reference, customer, product or SKU..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] placeholder-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent)]"
@@ -260,6 +265,7 @@ export const Deliveries: React.FC = () => {
 
         <div>
           <select
+            aria-label="Delivery status filter"
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
             className="w-full px-2.5 py-1.5 text-xs bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -269,6 +275,7 @@ export const Deliveries: React.FC = () => {
             <option value="Waiting">Waiting</option>
             <option value="Draft">Draft</option>
             <option value="Done">Dispatched (Done)</option>
+            <option value="Canceled">Canceled</option>
           </select>
         </div>
 
@@ -318,20 +325,12 @@ export const Deliveries: React.FC = () => {
               </tr>
             ) : (
               filteredDeliveries.map((dlv) => {
-                const totalUnits = dlv.items.reduce((sum, it) => sum + it.quantity, 0);
+                const totalUnits = quantitySummary(dlv.items);
                 const isDone = dlv.status === 'Done';
+                const isCanceled = dlv.status === 'Canceled';
                 const originName = getLocationName(dlv.warehouseId);
 
-                let hasStock = true;
-                if (!isDone) {
-                  for (const it of dlv.items) {
-                    const prod = products.find((p) => p.id === it.productId);
-                    if (!prod || (prod.locationStock[dlv.warehouseId] || 0) < it.quantity) {
-                      hasStock = false;
-                      break;
-                    }
-                  }
-                }
+                const hasStock = !deliveryAvailability(products, dlv.warehouseId, dlv.items);
 
                 return (
                   <tr
@@ -339,20 +338,19 @@ export const Deliveries: React.FC = () => {
                     onClick={() => setSelectedDelivery(dlv)}
                     className="hover:bg-[var(--surface-secondary)] cursor-pointer transition-colors"
                   >
-                    <td className="py-2.5 px-3 font-mono text-[var(--text)] font-medium">
-                      {dlv.id}
-                    </td>
+                    <td className="py-2.5 px-3 font-mono text-[var(--text)] font-medium">{dlv.id}</td>
                     <td className="py-2.5 px-3 text-[var(--text)]">{dlv.customer}</td>
                     <td className="py-2.5 px-3 text-[var(--text-secondary)]">{dlv.date}</td>
                     <td className="py-2.5 px-3 text-[var(--text-secondary)]">{originName}</td>
                     <td className="py-2.5 px-3 text-right text-[var(--text)] font-medium">
-                      {totalUnits.toLocaleString()}{' '}
+                      {totalUnits}{' '}
                       <span className="text-[10px] text-[var(--text-secondary)] font-normal">
                         ({dlv.items.length} lines)
                       </span>
                     </td>
                     <td className="py-2.5 px-3">
                       <StatusBadge status={dlv.status} size="sm" />
+                      <div className="text-[10px] text-[var(--text-secondary)] mt-1">{dlv.stage}</div>
                     </td>
                     <td className="py-2.5 px-3 text-right" onClick={(e) => e.stopPropagation()}>
                       {isDone ? (
@@ -360,17 +358,17 @@ export const Deliveries: React.FC = () => {
                           <CheckCircle2 className="w-3 h-3" />
                           Dispatched
                         </span>
+                      ) : isCanceled ? (
+                        <span className="text-[var(--text-secondary)]">Canceled</span>
                       ) : hasStock ? (
                         <button
-                          onClick={() => setDeliveryToValidate(dlv)}
+                          onClick={() => advance(dlv)}
                           className="text-[11px] font-medium text-[var(--accent)] hover:underline"
                         >
-                          Dispatch order
+                          {actionLabel(dlv)}
                         </button>
                       ) : (
-                        <span className="text-[11px] text-[var(--danger)]">
-                          Insufficient stock
-                        </span>
+                        <span className="text-[11px] text-[var(--danger)]">Insufficient stock</span>
                       )}
                     </td>
                   </tr>
@@ -403,6 +401,7 @@ export const Deliveries: React.FC = () => {
                 <div className="text-[var(--text-secondary)]">Status</div>
                 <div className="mt-1">
                   <StatusBadge status={selectedDelivery.status} size="sm" />
+                  <div className="text-xs mt-1">Stage: {selectedDelivery.stage}</div>
                 </div>
               </div>
 
@@ -419,9 +418,9 @@ export const Deliveries: React.FC = () => {
               </div>
 
               <div>
-                <div className="text-[var(--text-secondary)]">Total units</div>
+                <div className="text-[var(--text-secondary)]">Quantities by unit</div>
                 <div className="mt-1 font-medium text-[var(--text)]">
-                  {selectedDelivery.items.reduce((s, i) => s + i.quantity, 0)} units
+                  {quantitySummary(selectedDelivery.items)}
                 </div>
               </div>
             </div>
@@ -446,7 +445,7 @@ export const Deliveries: React.FC = () => {
                         <div className="font-mono font-medium text-[var(--text)]">
                           {it.quantity} {it.unit}
                         </div>
-                        {!hasStock && selectedDelivery.status !== 'Done' && (
+                        {!hasStock && !['Done', 'Canceled'].includes(selectedDelivery.status) && (
                           <div className="text-[10px] text-[var(--danger)]">deficit</div>
                         )}
                       </div>
@@ -456,6 +455,14 @@ export const Deliveries: React.FC = () => {
               </div>
             </div>
 
+            {!['Done', 'Canceled'].includes(selectedDelivery.status) && (
+              <button
+                className="text-link text-[var(--danger)]"
+                onClick={() => setCancelTarget(selectedDelivery)}
+              >
+                Cancel delivery
+              </button>
+            )}
             {selectedDelivery.notes && (
               <div className="space-y-1 pt-2">
                 <div className="text-[var(--text-secondary)]">Dispatch instructions</div>
@@ -465,17 +472,13 @@ export const Deliveries: React.FC = () => {
               </div>
             )}
 
-            {selectedDelivery.status !== 'Done' && (
+            {!['Done', 'Canceled'].includes(selectedDelivery.status) && (
               <div className="pt-4 border-t border-[var(--border)]">
                 <button
-                  onClick={() => {
-                    const d = selectedDelivery;
-                    setSelectedDelivery(null);
-                    setDeliveryToValidate(d);
-                  }}
+                  onClick={() => advance(selectedDelivery)}
                   className="w-full py-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium rounded transition-colors"
                 >
-                  Confirm and dispatch order
+                  {actionLabel(selectedDelivery)}
                 </button>
               </div>
             )}
@@ -500,8 +503,11 @@ export const Deliveries: React.FC = () => {
           )}
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Customer / Recipient *</label>
+            <label htmlFor="deliveries-field-0" className="text-[var(--text-secondary)] font-medium">
+              Customer / Recipient *
+            </label>
             <input
+              id="deliveries-field-0"
               type="text"
               required
               value={formCustomer}
@@ -513,8 +519,11 @@ export const Deliveries: React.FC = () => {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Dispatch date *</label>
+              <label htmlFor="deliveries-field-1" className="text-[var(--text-secondary)] font-medium">
+                Dispatch date *
+              </label>
               <input
+                id="deliveries-field-1"
                 type="date"
                 required
                 value={formDate}
@@ -524,8 +533,11 @@ export const Deliveries: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Origin warehouse *</label>
+              <label htmlFor="deliveries-field-2" className="text-[var(--text-secondary)] font-medium">
+                Origin warehouse *
+              </label>
               <select
+                id="deliveries-field-2"
                 value={formWarehouse}
                 onChange={(e) => setFormWarehouse(e.target.value)}
                 disabled={isStaff}
@@ -566,6 +578,7 @@ export const Deliveries: React.FC = () => {
                   <div key={idx} className="flex items-center gap-2">
                     <div className="flex-1">
                       <select
+                        aria-label={`Product on line ${idx + 1}`}
                         value={item.productId}
                         onChange={(e) => handleItemChange(idx, 'productId', e.target.value)}
                         className="w-full px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
@@ -583,7 +596,9 @@ export const Deliveries: React.FC = () => {
 
                     <input
                       type="number"
-                      min="1"
+                      min="0"
+                      step="any"
+                      aria-label={`Quantity on line ${idx + 1}`}
                       value={item.quantity}
                       onChange={(e) => handleItemChange(idx, 'quantity', e.target.value)}
                       className="w-20 px-2 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] text-right font-medium focus:outline-none focus:border-[var(--accent)]"
@@ -604,8 +619,11 @@ export const Deliveries: React.FC = () => {
           </div>
 
           <div className="space-y-1">
-            <label className="text-[var(--text-secondary)] font-medium">Instructions / Notes</label>
+            <label htmlFor="deliveries-field-3" className="text-[var(--text-secondary)] font-medium">
+              Instructions / Notes
+            </label>
             <textarea
+              id="deliveries-field-3"
               rows={2}
               value={formNotes}
               onChange={(e) => setFormNotes(e.target.value)}
@@ -632,6 +650,23 @@ export const Deliveries: React.FC = () => {
         </form>
       </SlideOverDrawer>
 
+      <ConfirmDialog
+        isOpen={!!cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        title="Cancel delivery?"
+        message="Cancel this open delivery without changing stock."
+        confirmLabel="Cancel delivery"
+        onConfirm={() => {
+          if (!cancelTarget) return;
+          const result = cancelDelivery(cancelTarget.id);
+          if (!result.success) showToast(result.error, 'error');
+          else {
+            if (selectedDelivery?.id === cancelTarget.id) setSelectedDelivery(result.data);
+            showToast('Delivery canceled.', 'info');
+          }
+          setCancelTarget(null);
+        }}
+      />
       {/* 6. CONFIRM DISPATCH DIALOG */}
       <ConfirmDialog
         isOpen={!!deliveryToValidate}
@@ -639,7 +674,7 @@ export const Deliveries: React.FC = () => {
         onConfirm={handleConfirmValidate}
         title="Dispatch delivery"
         message={`Dispatch delivery order ${deliveryToValidate?.id} for ${deliveryToValidate?.customer}? Stock will be deducted from ${getLocationName(
-          deliveryToValidate?.warehouseId || ''
+          deliveryToValidate?.warehouseId || '',
         )}.`}
         confirmLabel="Dispatch order"
         variant="info"

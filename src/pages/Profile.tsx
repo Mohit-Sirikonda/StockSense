@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import {
-  LogOut,
-  Check,
-  Lock,
-} from 'lucide-react';
+import { LogOut, Check, Lock } from 'lucide-react';
 import { useInventory } from '../context/InventoryContext';
 import { useToast } from '../context/ToastContext';
+import { DEMO_USERS } from '../data/users';
 
 export const Profile: React.FC = () => {
   const {
@@ -37,7 +34,10 @@ export const Profile: React.FC = () => {
     }
   }, [currentUser]);
 
-  const userOperationsCount = ledger.filter((l) => l.user === currentUser?.name).length;
+  const originalName = DEMO_USERS.find((user) => user.id === currentUser?.id)?.name;
+  const userOperationsCount = ledger.filter((l) =>
+    l.userId ? l.userId === currentUser?.id : l.user === originalName,
+  ).length;
 
   const handleSaveProfile = (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,15 +46,17 @@ export const Profile: React.FC = () => {
       return;
     }
 
-    updateUserProfile({
+    const result = updateUserProfile({
       name: name.trim(),
-      email: email.trim(),
-      role: role.trim() as any,
       phone: phone.trim(),
       department: department.trim(),
     });
 
-    showToast('Profile information updated.', 'success');
+    if (!result.success) {
+      showToast(result.error, 'error');
+      return;
+    }
+    showToast('Contact details saved in this browser.', 'success');
   };
 
   if (!currentUser) return null;
@@ -66,7 +68,7 @@ export const Profile: React.FC = () => {
         <div>
           <h1 className="text-xl font-semibold text-[var(--text)]">Profile</h1>
           <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-            Active session parameters and role-based operational clearances.
+            Your contact details, account role, and facility access.
           </p>
         </div>
 
@@ -89,7 +91,8 @@ export const Profile: React.FC = () => {
             <div className="text-base font-semibold text-[var(--text)]">{currentUser.name}</div>
             <div className="text-xs text-[var(--text-secondary)]">{currentUser.email}</div>
             <div className="text-[11px] text-[var(--text-secondary)] mt-0.5">
-              <span className="font-medium text-[var(--text)]">{currentUser.role}</span> · {department || 'Operations'}
+              <span className="font-medium text-[var(--text)]">{currentUser.role}</span> ·{' '}
+              {department || 'Operations'}
             </div>
             {isStaff && (
               <div className="text-[11px] text-[var(--accent)] mt-0.5 font-medium">
@@ -111,11 +114,19 @@ export const Profile: React.FC = () => {
       <section className="border border-[var(--border)] rounded bg-[var(--surface)] p-5 space-y-4">
         <h2 className="text-sm font-semibold text-[var(--text)]">Personal details</h2>
 
+        <p className="notice">
+          Contact details are saved in this browser and retained when you sign in again. Login email, role,
+          and warehouse assignment cannot be edited here. Sign out and use account recovery to reset a demo
+          password.
+        </p>
         <form onSubmit={handleSaveProfile} className="space-y-4 text-xs">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Full name *</label>
+              <label htmlFor="profile-field-0" className="text-[var(--text-secondary)] font-medium">
+                Full name *
+              </label>
               <input
+                id="profile-field-0"
                 type="text"
                 required
                 value={name}
@@ -125,19 +136,25 @@ export const Profile: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Email address *</label>
+              <label htmlFor="profile-field-1" className="text-[var(--text-secondary)] font-medium">
+                Email address *
+              </label>
               <input
+                id="profile-field-1"
                 type="email"
+                readOnly
                 required
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-2.5 py-1.5 bg-[var(--surface)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Role title</label>
+              <label htmlFor="profile-field-2" className="text-[var(--text-secondary)] font-medium">
+                Role title
+              </label>
               <input
+                id="profile-field-2"
                 type="text"
                 readOnly
                 value={role}
@@ -146,8 +163,11 @@ export const Profile: React.FC = () => {
             </div>
 
             <div className="space-y-1">
-              <label className="text-[var(--text-secondary)] font-medium">Department</label>
+              <label htmlFor="profile-field-3" className="text-[var(--text-secondary)] font-medium">
+                Department
+              </label>
               <input
+                id="profile-field-3"
                 type="text"
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
@@ -156,8 +176,11 @@ export const Profile: React.FC = () => {
             </div>
 
             <div className="space-y-1 sm:col-span-2">
-              <label className="text-[var(--text-secondary)] font-medium">Contact phone</label>
+              <label htmlFor="profile-field-4" className="text-[var(--text-secondary)] font-medium">
+                Contact phone
+              </label>
               <input
+                id="profile-field-4"
                 type="text"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
@@ -184,7 +207,7 @@ export const Profile: React.FC = () => {
           <p className="text-xs text-[var(--text-secondary)]">
             {isStaff
               ? `Operational authorizations for ${currentUser.name} (${currentUser.role}).`
-              : 'Full organization authorization granted across all registered storage facilities.'}
+              : 'Operational access across all registered facilities.'}
           </p>
         </div>
 
@@ -211,7 +234,8 @@ export const Profile: React.FC = () => {
                   </span>
                 ) : (
                   <span className="text-[11px] text-[var(--text-secondary)] font-medium flex items-center gap-1">
-                    <Lock className="w-3 h-3 text-[var(--text-secondary)]" /> Restricted (View only)
+                    <Lock className="w-3 h-3 text-[var(--text-secondary)]" /> Transfers involving your
+                    facility only
                   </span>
                 )}
               </div>

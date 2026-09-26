@@ -39,25 +39,20 @@ export const SlideOverDrawer: React.FC<SlideOverDrawerProps> = ({
   return (
     <div className="fixed inset-0 z-50 overflow-hidden">
       {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/30 transition-opacity"
-        onClick={onClose}
-        aria-hidden="true"
-      />
+      <div className="fixed inset-0 bg-black/30 transition-opacity" onClick={onClose} aria-hidden="true" />
 
       <div className="fixed inset-y-0 right-0 flex pl-10 max-w-full">
         <div
           className={`w-screen ${widthClass} bg-[var(--surface)] text-[var(--text)] border-l border-[var(--border)] shadow-lg flex flex-col`}
           role="dialog"
           aria-modal="true"
+          aria-label={title}
         >
           {/* Header */}
           <div className="px-5 py-4 border-b border-[var(--border)] flex items-start justify-between bg-[var(--surface)]">
             <div>
               <h2 className="text-base font-semibold text-[var(--text)]">{title}</h2>
-              {subtitle && (
-                <p className="text-xs text-[var(--text-secondary)] mt-0.5">{subtitle}</p>
-              )}
+              {subtitle && <p className="text-xs text-[var(--text-secondary)] mt-0.5">{subtitle}</p>}
             </div>
             <button
               onClick={onClose}
@@ -69,9 +64,7 @@ export const SlideOverDrawer: React.FC<SlideOverDrawerProps> = ({
           </div>
 
           {/* Body */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[var(--surface)]">
-            {children}
-          </div>
+          <div className="flex-1 overflow-y-auto p-5 space-y-5 bg-[var(--surface)]">{children}</div>
         </div>
       </div>
     </div>
